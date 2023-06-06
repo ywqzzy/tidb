@@ -16,9 +16,11 @@ package dispatcher
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/disttask/framework/hook"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/disttask/framework/storage"
 	"github.com/pingcap/tidb/domain/infosync"
@@ -105,6 +107,12 @@ type dispatcher struct {
 		taskIDs map[int64]struct{}
 	}
 	detectPendingGTaskCh chan *proto.Task
+
+	// hook maybe modified
+	mu struct {
+		sync.RWMutex
+		hook hook.Callback
+	}
 }
 
 // NewDispatcher creates a dispatcher struct.
@@ -113,6 +121,7 @@ func NewDispatcher(ctx context.Context, taskTable *storage.TaskManager) (Dispatc
 		taskMgr:              taskTable,
 		detectPendingGTaskCh: make(chan *proto.Task, DefaultDispatchConcurrency),
 	}
+	dispatcher.mu.hook = &hook.BaseCallback{}
 	pool, err := spool.NewPool("dispatch_pool", int32(DefaultDispatchConcurrency), util.DistTask, spool.WithBlocking(true))
 	if err != nil {
 		return nil, err
@@ -122,6 +131,12 @@ func NewDispatcher(ctx context.Context, taskTable *storage.TaskManager) (Dispatc
 	dispatcher.runningGTasks.taskIDs = make(map[int64]struct{})
 
 	return dispatcher, nil
+}
+
+func (d *dispatcher) callHookOnDispatchGTaskBefore() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.mu.hook.OnDispatchGTaskBefore(d.taskMgr)
 }
 
 // Start implements Dispatch.Start interface.
@@ -154,14 +169,13 @@ func (d *dispatcher) DispatchTaskLoop() {
 					zap.Int("running cnt", cnt), zap.Int("concurrency", DefaultDispatchConcurrency))
 				break
 			}
-
 			// TODO: Consider getting these tasks, in addition to the task being worked on..
 			gTasks, err := d.taskMgr.GetGlobalTasksInStates(proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateReverting, proto.TaskStateCancelling)
 			if err != nil {
 				logutil.BgLogger().Warn("get unfinished(pending, running, reverting or cancelling) tasks failed", zap.Error(err))
 				break
 			}
-
+			// d.callHookOnDispatchGTaskBefore()
 			// There are currently no global tasks to work on.
 			if len(gTasks) == 0 {
 				break
@@ -182,7 +196,7 @@ func (d *dispatcher) DispatchTaskLoop() {
 						zap.Int("running cnt", cnt), zap.Int("concurrency", DefaultDispatchConcurrency))
 					break
 				}
-
+				/// pending--->running
 				err = d.processNormalFlow(gTask)
 				logutil.BgLogger().Info("dispatch task loop", zap.Int64("task ID", gTask.ID),
 					zap.String("state", gTask.State), zap.Uint64("concurrency", gTask.Concurrency), zap.Error(err))
@@ -437,6 +451,8 @@ func (d *dispatcher) processNormalFlow(gTask *proto.Task) (err error) {
 			zap.Int("gTask.ID", int(gTask.ID)), zap.String("type", gTask.Type), zap.String("instanceID", instanceID))
 		subTasks = append(subTasks, proto.NewSubtask(gTask.ID, gTask.Type, instanceID, meta))
 	}
+
+	d.callHookOnDispatchGTaskBefore()
 
 	return d.updateTask(gTask, gTask.State, subTasks, retrySQLTimes)
 }

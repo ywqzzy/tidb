@@ -152,7 +152,7 @@ func DispatchAndCancelTask(taskKey string, t *testing.T, v *atomic.Int64) {
 	taskID, err := mgr.AddNewGlobalTask(taskKey, proto.TaskTypeExample, 8, nil)
 	require.NoError(t, err)
 	start := time.Now()
-	mgr.CancelGlobalTask(1)
+
 	var task *proto.Task
 	for {
 		if time.Since(start) > 2*time.Minute {
@@ -263,6 +263,17 @@ func TestFrameworkWithQuery(t *testing.T) {
 }
 
 func TestFrameworkCancelGTask(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	testContext, err := testkit.NewDistExecutionTestContext(t, 2)
+	require.NoError(t, err)
+	DispatchAndCancelTask("key1", t, &v)
+	testContext.Close()
+}
+
+func TestFrameworkIssue44443(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
 	var v atomic.Int64

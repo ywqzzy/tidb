@@ -126,6 +126,7 @@ func (d *DistExecutionTestContext) DeleteServer(idx int) error {
 			return err
 		}
 	}
+	d.domains[idx].Close()
 	d.domains = append(d.domains[:idx], d.domains[idx+1:]...)
 	return infosync.MockGlobalServerInfoManagerEntry.Delete(idx)
 }
