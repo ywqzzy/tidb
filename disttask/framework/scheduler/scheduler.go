@@ -25,6 +25,20 @@ import (
 	"go.uber.org/zap"
 )
 
+// Callback is used for Dist Task Framework
+type Callback4Scheduler interface {
+	OnRollbackBefore(taskMgr TaskTable)
+}
+
+type BaseCallback4Scheduler struct {
+}
+
+func (*BaseCallback4Scheduler) OnRollbackBefore(taskMgr TaskTable) {
+	// Nothing to do
+	logutil.BgLogger().Info("ywq test on rollback before")
+	// taskMgr.CancelGlobalTask(1)
+}
+
 // InternalSchedulerImpl is the implementation of InternalScheduler.
 type InternalSchedulerImpl struct {
 	ctx       context.Context
@@ -42,6 +56,7 @@ type InternalSchedulerImpl struct {
 		err error
 		// runtimeCancel is used to cancel the Run/Rollback when error occurs.
 		runtimeCancel context.CancelFunc
+		hook          Callback4Scheduler
 	}
 }
 
@@ -56,6 +71,7 @@ func NewInternalScheduler(ctx context.Context, id string, taskID int64, taskTabl
 		logCtx:    logutil.WithKeyValue(context.Background(), "scheduler", logPrefix),
 	}
 	schedulerImpl.ctx, schedulerImpl.cancel = context.WithCancel(ctx)
+	schedulerImpl.mu.hook = &BaseCallback4Scheduler{}
 
 	return schedulerImpl
 }
@@ -269,6 +285,8 @@ func (s *InternalSchedulerImpl) Rollback(ctx context.Context, task *proto.Task) 
 		}
 	}
 
+	s.mu.hook.OnRollbackBefore(s.taskTable)
+
 	scheduler, err := createScheduler(task)
 	if err != nil {
 		s.onError(err)
@@ -283,6 +301,7 @@ func (s *InternalSchedulerImpl) Rollback(ctx context.Context, task *proto.Task) 
 		logutil.BgLogger().Warn("scheduler rollback a step, but no subtask in revert_pending state", zap.Any("step", task.Step))
 		return nil
 	}
+	// ywq todo rollback error
 	s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverting, "")
 	if err := s.getError(); err != nil {
 		return err

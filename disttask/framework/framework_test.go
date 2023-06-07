@@ -283,3 +283,29 @@ func TestFrameworkIssue44443(t *testing.T) {
 	DispatchAndCancelTask("key1", t, &v)
 	testContext.Close()
 }
+
+// cancel after cancel
+func TestFrameworkCancelAfterRollback(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	testContext, err := testkit.NewDistExecutionTestContext(t, 2)
+	require.NoError(t, err)
+	DispatchAndCancelTask("key1", t, &v)
+	testContext.Close()
+}
+
+// sucess cancel
+func TestFrameworkCancelAfterSuccess(t *testing.T) {
+
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+
+	testContext, err := testkit.NewDistExecutionTestContext(t, 2)
+	require.NoError(t, err)
+	DispatchTask("key1", t, &v)
+	testContext.Close()
+}

@@ -28,6 +28,7 @@ type TaskTable interface {
 	UpdateSubtaskStateAndError(id int64, state string, err string) error
 	FinishSubtask(id int64, meta []byte) error
 	HasSubtasksInStates(instanceID string, taskID int64, states ...interface{}) (bool, error)
+	CancelGlobalTask(taskID int64) error
 }
 
 // Pool defines the interface of a pool.

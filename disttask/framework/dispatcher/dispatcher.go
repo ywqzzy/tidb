@@ -139,6 +139,24 @@ func (d *dispatcher) callHookOnDispatchGTaskBefore() {
 	d.mu.hook.OnDispatchGTaskBefore(d.taskMgr)
 }
 
+func (d *dispatcher) callHookOnDispatchSubTasksAfter() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.mu.hook.OnDispatchSubTasksAfter(d.taskMgr)
+}
+
+func (d *dispatcher) callHookOnUpdateTaskBefore() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.mu.hook.OnUpdateTaskBefore(d.taskMgr)
+}
+
+func (d *dispatcher) callHookOnUpdateTaskAfter() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.mu.hook.OnUpdateTaskAfter(d.taskMgr)
+}
+
 // Start implements Dispatch.Start interface.
 func (d *dispatcher) Start() {
 	d.wg.Run(d.DispatchTaskLoop)
@@ -175,7 +193,7 @@ func (d *dispatcher) DispatchTaskLoop() {
 				logutil.BgLogger().Warn("get unfinished(pending, running, reverting or cancelling) tasks failed", zap.Error(err))
 				break
 			}
-			// d.callHookOnDispatchGTaskBefore()
+			d.callHookOnDispatchGTaskBefore()
 			// There are currently no global tasks to work on.
 			if len(gTasks) == 0 {
 				break
@@ -185,6 +203,8 @@ func (d *dispatcher) DispatchTaskLoop() {
 				if d.isRunningGTask(gTask.ID) {
 					continue
 				}
+
+				// ywq todo test this
 				// owner changed
 				if gTask.State == proto.TaskStateRunning || gTask.State == proto.TaskStateReverting || gTask.State == proto.TaskStateCancelling {
 					d.setRunningGTask(gTask)
@@ -214,6 +234,8 @@ func (d *dispatcher) probeTask(gTask *proto.Task) (isFinished bool, subTaskErr [
 	// TODO: Consider putting the following operations into a transaction.
 	// TODO: Consider collect some information about the tasks.
 	if gTask.State != proto.TaskStateReverting {
+		// cancel ---> reverting
+		// hook change owner sleep a while, to another owner
 		cancelling, err := d.taskMgr.IsGlobalTaskCancelling(gTask.ID)
 		if err != nil {
 			logutil.BgLogger().Warn("check task cancelling failed", zap.Int64("task ID", gTask.ID), zap.Error(err))
@@ -224,6 +246,7 @@ func (d *dispatcher) probeTask(gTask *proto.Task) (isFinished bool, subTaskErr [
 			return false, [][]byte{[]byte("cancel")}
 		}
 
+		/// failed to reverting
 		cnt, err := d.taskMgr.GetSubtaskInStatesCnt(gTask.ID, proto.TaskStateFailed)
 		if err != nil {
 			logutil.BgLogger().Warn("check task failed", zap.Int64("task ID", gTask.ID), zap.Error(err))
@@ -255,6 +278,7 @@ func (d *dispatcher) probeTask(gTask *proto.Task) (isFinished bool, subTaskErr [
 		return false, nil
 	}
 	if cnt > 0 {
+		logutil.BgLogger().Info("ywq test reverting subtask cnt", zap.Int64("cnt", cnt))
 		return false, nil
 	}
 	return true, nil
@@ -336,6 +360,9 @@ func (d *dispatcher) processFlow(gTask *proto.Task, errStr [][]byte) bool {
 }
 
 func (d *dispatcher) updateTask(gTask *proto.Task, gTaskState string, newSubTasks []*proto.Subtask, retryTimes int) (err error) {
+	if gTask.State != proto.TaskStateReverting {
+		d.callHookOnUpdateTaskBefore()
+	}
 	prevState := gTask.State
 	gTask.State = gTaskState
 	for i := 0; i < retryTimes; i++ {
@@ -425,10 +452,12 @@ func (d *dispatcher) processNormalFlow(gTask *proto.Task) (err error) {
 		gTask.StateUpdateTime = time.Now().UTC()
 		// Write the global task meta into the storage.
 		err = d.updateTask(gTask, proto.TaskStateSucceed, nil, retryTimes)
+		d.callHookOnUpdateTaskAfter()
 		if err != nil {
 			logutil.BgLogger().Warn("update global task failed", zap.Error(err))
 			return err
 		}
+
 		return nil
 	}
 
@@ -452,9 +481,10 @@ func (d *dispatcher) processNormalFlow(gTask *proto.Task) (err error) {
 		subTasks = append(subTasks, proto.NewSubtask(gTask.ID, gTask.Type, instanceID, meta))
 	}
 
-	d.callHookOnDispatchGTaskBefore()
-
-	return d.updateTask(gTask, gTask.State, subTasks, retrySQLTimes)
+	res := d.updateTask(gTask, gTask.State, subTasks, retrySQLTimes)
+	// d.callHookOnDispatchSubTasksAfter()
+	d.taskMgr.CancelGlobalTask(1)
+	return res
 }
 
 // GenerateSchedulerNodes generate a eligible TiDB nodes.
