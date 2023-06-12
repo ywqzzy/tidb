@@ -29,11 +29,15 @@ import (
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/store/helper"
 	"github.com/pingcap/tidb/table"
+	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
+	"go.uber.org/zap"
 )
 
 type litBackfillFlowHandle struct {
-	d DDL
+	d    DDL
+	plan *BaseDistTaskLogicalPlan
+	idx  int
 }
 
 var _ dispatcher.TaskFlowHandle = (*litBackfillFlowHandle)(nil)
@@ -41,68 +45,69 @@ var _ dispatcher.TaskFlowHandle = (*litBackfillFlowHandle)(nil)
 // NewLitBackfillFlowHandle creates a new litBackfillFlowHandle.
 func NewLitBackfillFlowHandle(d DDL) dispatcher.TaskFlowHandle {
 	return &litBackfillFlowHandle{
-		d: d,
+		d:   d,
+		idx: 0,
 	}
 }
 
 func (*litBackfillFlowHandle) OnTicker(_ context.Context, _ *proto.Task) {
 }
 
-type baseDistTaskLogicalPlan interface {
-	Child() *baseDistTaskLogicalPlan
+type distTaskLogicalPlan interface {
+	Child() distTaskLogicalPlan
 	Valid() bool
-	SetChild(*baseDistTaskLogicalPlan)
+	SetChild(distTaskLogicalPlan)
 }
 
-type DistTaskLogicalPlan struct {
+type BaseDistTaskLogicalPlan struct {
 	gTask        *proto.Task
-	subTaskMetas [][]byte
-	child        *baseDistTaskLogicalPlan
+	SubTaskMetas [][]byte
+	child        distTaskLogicalPlan
 }
 
-func (d DistTaskLogicalPlan) Child() *baseDistTaskLogicalPlan {
+func (d *BaseDistTaskLogicalPlan) Child() distTaskLogicalPlan {
 	return d.child
 }
 
-func (d DistTaskLogicalPlan) Valid() bool {
-	return len(d.subTaskMetas) >= 0
+func (d *BaseDistTaskLogicalPlan) Valid() bool {
+	return len(d.SubTaskMetas) > 0
 }
 
-func (d DistTaskLogicalPlan) SetChild(child *baseDistTaskLogicalPlan) {
+func (d *BaseDistTaskLogicalPlan) SetChild(child distTaskLogicalPlan) {
 	d.child = child
 }
 
 type DistPlanBuilder struct {
 }
 
-func (b *DistPlanBuilder) Build(gTask *proto.Task, d *ddl) (baseDistTaskLogicalPlan, error) {
+func (b *DistPlanBuilder) Build(gTask *proto.Task, d *ddl) (BaseDistTaskLogicalPlan, error) {
 	switch gTask.Type {
 	case BackfillTaskType:
 		return b.BuildBackFill(gTask, d)
 	}
 	// ywq todo
-	return nil, nil
+	return BaseDistTaskLogicalPlan{}, nil
 }
 
-func (b *DistPlanBuilder) BuildBackFill(gTask *proto.Task, d *ddl) (plan baseDistTaskLogicalPlan, err error) {
+func (b *DistPlanBuilder) BuildBackFill(gTask *proto.Task, d *ddl) (plan BaseDistTaskLogicalPlan, err error) {
 	meta, err := b.ProcessNormalFlow(gTask, d)
-	plan = &DistTaskLogicalPlan{
+	plan = BaseDistTaskLogicalPlan{
 		gTask:        gTask,
-		subTaskMetas: meta,
-	}
-	if plan.Valid() {
-		meta, err := b.ProcessNormalFlow(gTask, d)
-		if err != nil {
+		SubTaskMetas: meta}
+	cur := &plan
+
+	for cur.Valid() {
+		meta, _ := b.ProcessNormalFlow(gTask, d)
+		if meta == nil {
 			return plan, err
 		}
-		newPlan := &DistTaskLogicalPlan{
+		newPlan := &BaseDistTaskLogicalPlan{
 			gTask:        gTask,
-			subTaskMetas: meta,
-		}
-		plan.SetChild(newPlan)
-		newPlan = plan
+			SubTaskMetas: meta}
+		cur.SetChild(newPlan)
+		cur = newPlan
 	}
-
+	return plan, err
 }
 
 func (b *DistPlanBuilder) processNonPartitionTableFlow(job *model.Job, tblInfo *model.TableInfo, gTask *proto.Task, d *ddl) (metas [][]byte, err error) {
@@ -227,114 +232,11 @@ func (b *DistPlanBuilder) ProcessNormalFlow(gTask *proto.Task, d *ddl) (metas []
 
 	if tblInfo.Partition == nil {
 		return b.processNonPartitionTableFlow(job, tblInfo, gTask, d)
-	} else {
+	} else if gTask.Step != proto.StepOne {
 		return b.processPartitionTableFlow(tblInfo, gTask)
-	}
-}
-
-/////
-
-func (h *litBackfillFlowHandle) processNonPartitionTableFlow(job *model.Job, d *ddl, tblInfo *model.TableInfo, gTask *proto.Task) (metas [][]byte, err error) {
-	var subTaskMetas [][]byte
-	switch gTask.Step {
-	case proto.StepOne:
-		serverNodes, err := dispatcher.GenerateSchedulerNodes(d.ctx)
-		if err != nil {
-			return nil, err
-		}
-		subTaskMetas = make([][]byte, 0, len(serverNodes))
-		dummyMeta := &BackfillSubTaskMeta{}
-		metaBytes, err := json.Marshal(dummyMeta)
-		if err != nil {
-			return nil, err
-		}
-		for range serverNodes {
-			subTaskMetas = append(subTaskMetas, metaBytes)
-		}
-		gTask.Step = proto.StepTwo
-		return subTaskMetas, nil
-	case proto.StepTwo:
-		return nil, nil
-	default:
-	}
-	tbl, err := getTable(d.store, job.SchemaID, tblInfo)
-	if err != nil {
-		return nil, err
-	}
-	ver, err := getValidCurrentVersion(d.store)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	startKey, endKey, err := getTableRange(d.jobContext(job.ID), d.ddlCtx, tbl.(table.PhysicalTable), ver.Ver, job.Priority)
-	if startKey == nil && endKey == nil {
-		// Empty table.
-		gTask.Step = proto.StepOne
+	} else {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	regionCache := d.store.(helper.Storage).GetRegionCache()
-	recordRegionMetas, err := regionCache.LoadRegionsInKeyRange(tikv.NewBackofferWithVars(context.Background(), 20000, nil), startKey, endKey)
-	if err != nil {
-		return nil, err
-	}
-
-	subTaskMetas = make([][]byte, 0, 100)
-	regionBatch := 20
-	sort.Slice(recordRegionMetas, func(i, j int) bool {
-		return bytes.Compare(recordRegionMetas[i].StartKey(), recordRegionMetas[j].StartKey()) < 0
-	})
-	for i := 0; i < len(recordRegionMetas); i += regionBatch {
-		end := i + regionBatch
-		if end > len(recordRegionMetas) {
-			end = len(recordRegionMetas)
-		}
-		batch := recordRegionMetas[i:end]
-		subTaskMeta := &BackfillSubTaskMeta{StartKey: batch[0].StartKey(), EndKey: batch[len(batch)-1].EndKey()}
-		if i == 0 {
-			subTaskMeta.StartKey = startKey
-		}
-		if end == len(recordRegionMetas) {
-			subTaskMeta.EndKey = endKey
-		}
-		metaBytes, err := json.Marshal(subTaskMeta)
-		if err != nil {
-			return nil, err
-		}
-		subTaskMetas = append(subTaskMetas, metaBytes)
-	}
-	gTask.Step = proto.StepOne
-	return subTaskMetas, nil
-}
-
-func (h *litBackfillFlowHandle) processPartitionTableFlow(tblInfo *model.TableInfo, gTask *proto.Task) (metas [][]byte, err error) {
-	if gTask.State != proto.TaskStatePending {
-		// This flow for partition table has only one step, finish task when it is not pending
-		return nil, nil
-	}
-
-	defs := tblInfo.Partition.Definitions
-	physicalIDs := make([]int64, len(defs))
-	for i := range defs {
-		physicalIDs[i] = defs[i].ID
-	}
-
-	subTaskMetas := make([][]byte, 0, len(physicalIDs))
-	for _, physicalID := range physicalIDs {
-		subTaskMeta := &BackfillSubTaskMeta{
-			PhysicalTableID: physicalID,
-		}
-
-		metaBytes, err := json.Marshal(subTaskMeta)
-		if err != nil {
-			return nil, err
-		}
-
-		subTaskMetas = append(subTaskMetas, metaBytes)
-	}
-	gTask.Step = proto.StepOne
-	return subTaskMetas, nil
 }
 
 // ProcessNormalFlow processes the normal flow.
@@ -347,22 +249,30 @@ func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatche
 	if !ok {
 		return nil, errors.New("The getDDL result should be the type of *ddl")
 	}
+	if h.idx == 0 {
+		builder := &DistPlanBuilder{}
 
-	job := &globalTaskMeta.Job
-	var tblInfo *model.TableInfo
-	err = kv.RunInNewTxn(d.ctx, d.store, true, func(ctx context.Context, txn kv.Transaction) error {
-		tblInfo, err = meta.NewMeta(txn).GetTable(job.SchemaID, job.TableID)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
+		plan, err := builder.Build(gTask, d)
 
-	if tblInfo.Partition == nil {
-		return h.processNonPartitionTableFlow(job, d, tblInfo, gTask)
-	} else {
-		return h.processPartitionTableFlow(tblInfo, gTask)
+		h.plan = &plan
+		for plan.Valid() {
+			if plan.Child() != nil {
+				logutil.BgLogger().Info("generate subtasks", zap.Any("subtask_metas", plan.SubTaskMetas))
+				plan = *plan.Child().(*BaseDistTaskLogicalPlan)
+			} else {
+				break
+			}
+		}
+		if err != nil {
+			logutil.BgLogger().Info("ywq test")
+		}
 	}
+	res := h.plan.SubTaskMetas
+	if h.plan.Child() != nil {
+		h.plan = h.plan.Child().(*BaseDistTaskLogicalPlan)
+		h.idx++
+	}
+	return res, nil
 }
 
 func (*litBackfillFlowHandle) ProcessErrFlow(_ context.Context, _ dispatcher.TaskHandle, task *proto.Task, receiveErr [][]byte) (meta []byte, err error) {
