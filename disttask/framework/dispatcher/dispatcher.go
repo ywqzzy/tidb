@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/disttask/framework/storage"
 	"github.com/pingcap/tidb/domain/infosync"
@@ -414,6 +415,12 @@ func (d *dispatcher) dispatchSubTask(gTask *proto.Task, handle TaskFlowHandle, m
 
 	if len(metas) == 0 {
 		gTask.StateUpdateTime = time.Now().UTC()
+		failpoint.Inject("MockCancelBeforeUpdateTask", func(val failpoint.Value) {
+			if val.(bool) {
+				logutil.BgLogger().Warn("ywq test cancel")
+				d.taskMgr.CancelGlobalTask(gTask.ID)
+			}
+		})
 		// Write the global task meta into the storage.
 		err := d.updateTask(gTask, proto.TaskStateSucceed, nil, retryTimes)
 		if err != nil {
@@ -441,7 +448,6 @@ func (d *dispatcher) dispatchSubTask(gTask *proto.Task, handle TaskFlowHandle, m
 			zap.Int("gTask.ID", int(gTask.ID)), zap.String("type", gTask.Type), zap.String("instanceID", instanceID))
 		subTasks = append(subTasks, proto.NewSubtask(gTask.ID, gTask.Type, instanceID, meta))
 	}
-
 	return d.updateTask(gTask, gTask.State, subTasks, retrySQLTimes)
 }
 

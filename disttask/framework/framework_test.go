@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/disttask/framework/dispatcher"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/disttask/framework/scheduler"
@@ -178,6 +179,36 @@ func DispatchAndCancelTask(taskKey string, t *testing.T, v *atomic.Int64) {
 	v.Store(0)
 }
 
+func DispatchAndCancelTaskBeforeUpdateTask(taskKey string, t *testing.T, v *atomic.Int64) {
+	mgr, err := storage.GetTaskManager()
+	require.NoError(t, err)
+	taskID, err := mgr.AddNewGlobalTask(taskKey, proto.TaskTypeExample, 8, nil)
+	require.NoError(t, err)
+	start := time.Now()
+
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockCancelBeforeUpdateTask", `1*return(true)`))
+	defer func() {
+		require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockCancelBeforeUpdateTask"))
+	}()
+	var task *proto.Task
+	for {
+		if time.Since(start) > 2*time.Minute {
+			require.FailNow(t, "timeout")
+		}
+
+		time.Sleep(time.Second)
+		task, err = mgr.GetGlobalTaskByID(taskID)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		if task.State != proto.TaskStatePending && task.State != proto.TaskStateRunning && task.State != proto.TaskStateCancelling && task.State != proto.TaskStateReverting {
+			break
+		}
+	}
+
+	require.Equal(t, proto.TaskStateReverted, task.State)
+	v.Store(0)
+}
+
 func TestFrameworkBasic(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
@@ -267,5 +298,15 @@ func TestFrameworkCancelGTask(t *testing.T) {
 	RegisterTaskMeta(&v)
 	testContext := testkit.NewDistExecutionTestContext(t, 2)
 	DispatchAndCancelTask("key1", t, &v)
+	testContext.Close()
+}
+
+func TestFrameworkIssue44443(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	testContext := testkit.NewDistExecutionTestContext(t, 2)
+	DispatchAndCancelTaskBeforeUpdateTask("key1", t, &v)
 	testContext.Close()
 }
