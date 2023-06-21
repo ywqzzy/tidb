@@ -332,7 +332,7 @@ func TestFrameworkIssue44443(t *testing.T) {
 	defer scheduler.ClearSchedulers()
 	var v atomic.Int64
 	RegisterTaskMeta(&v)
-	testContext := testkit.NewDistExecutionTestContext(t, 2)
+	testContext := testkit.NewDistExecutionContext(t, 2)
 	DispatchAndCancelTaskBeforeUpdateTask("key1", t, &v)
 	testContext.Close()
 }
