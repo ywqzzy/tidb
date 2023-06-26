@@ -105,6 +105,7 @@ func (u *S3Uploader) Write(ctx context.Context, data []byte) (int, error) {
 		UploadId:      u.createOutput.UploadId,
 		ContentLength: aws.Int64(int64(len(data))),
 	}
+	log.Info("Write", zap.Any("key", partInput.Key))
 
 	uploadResult, err := u.svc.UploadPartWithContext(ctx, partInput)
 	if err != nil {
@@ -888,6 +889,7 @@ func (rs *S3Storage) CreateUploader(ctx context.Context, name string) (ExternalF
 		Bucket: aws.String(rs.options.Bucket),
 		Key:    aws.String(rs.options.Prefix + name),
 	}
+	log.Info("CreateUploader", zap.Any("key", input.Key))
 	if rs.options.Acl != "" {
 		input = input.SetACL(rs.options.Acl)
 	}
