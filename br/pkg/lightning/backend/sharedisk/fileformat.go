@@ -38,11 +38,10 @@ type KeyValueStore struct {
 func Create(ctx context.Context, dataWriter, statWriter storage.ExternalFileWriter) (*KeyValueStore, error) {
 	kvStore := &KeyValueStore{dataWriter: dataWriter, statWriter: statWriter, ctx: ctx}
 	kvStore.writeBuffer = make([]byte, writeBufferSize)
-	kvStore.rc = &RangePropertiesCollector{}
 	return kvStore, nil
 }
 
-func (s KeyValueStore) AddKeyValue(key, value []byte) error {
+func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 	kvLen := len(key) + len(value) + 16
 
 	_, err := s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(nil, uint64(len(key))))
@@ -62,12 +61,12 @@ func (s KeyValueStore) AddKeyValue(key, value []byte) error {
 		return err
 	}
 
-	if len(s.rc.lastKey) == 0 || s.offset >= s.rc.propSizeIdxDistance ||
-		s.keyCnt >= s.rc.propKeysIdxDistance {
+	if len(s.rc.lastKey) == 0 || s.rc.currProp.Size >= s.rc.propSizeIdxDistance ||
+		s.rc.currProp.Keys >= s.rc.propKeysIdxDistance {
 		if len(s.rc.lastKey) != 0 {
 			s.rc.props = append(s.rc.props, s.rc.currProp)
 		}
-		s.rc.currProp = RangeProperty{
+		s.rc.currProp = &RangeProperty{
 			Key:    key,
 			offset: s.offset,
 			rangeOffsets: rangeOffsets{
@@ -77,6 +76,7 @@ func (s KeyValueStore) AddKeyValue(key, value []byte) error {
 		}
 	}
 
+	s.rc.lastKey = key
 	s.bufferOffset += kvLen
 	s.offset += uint64(kvLen)
 	s.keyCnt++
@@ -87,7 +87,7 @@ func (s KeyValueStore) AddKeyValue(key, value []byte) error {
 	return nil
 }
 
-func (s KeyValueStore) Finish() error {
+func (s *KeyValueStore) Finish() error {
 	if s.rc.currProp.Keys > 0 {
 		s.rc.props = append(s.rc.props, s.rc.currProp)
 	}

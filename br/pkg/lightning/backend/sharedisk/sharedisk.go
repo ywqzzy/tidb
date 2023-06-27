@@ -46,8 +46,8 @@ type RangeProperty struct {
 
 // RangePropertiesCollector collects range properties for each range.
 type RangePropertiesCollector struct {
-	props               []RangeProperty
-	currProp            RangeProperty
+	props               []*RangeProperty
+	currProp            *RangeProperty
 	lastOffsets         rangeOffsets
 	lastKey             []byte
 	currentOffsets      rangeOffsets
@@ -96,7 +96,7 @@ func Decode2RangeProperty(data []byte) (*RangeProperty, error) {
 }
 
 type Engine struct {
-	rc RangePropertiesCollector
+	rc *RangePropertiesCollector
 }
 
 // Writer is used to write data into external storage.
@@ -267,7 +267,7 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 		}
 		sr.init = true
 	}
-	if len(sr.readBuffer)-sr.currBufferOffset < 4 {
+	if sr.bufferMaxOffset-sr.currBufferOffset < 4 {
 		get, err := sr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, err
@@ -279,7 +279,7 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 	propLen := binary.BigEndian.Uint32(sr.readBuffer[sr.currBufferOffset:])
 	sr.currBufferOffset += 4
 
-	if len(sr.readBuffer)-sr.currBufferOffset < int(propLen) {
+	if sr.bufferMaxOffset-sr.currBufferOffset < int(propLen) {
 		get, err := sr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, err
@@ -359,6 +359,9 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {
+	if w.batchCount == 0 {
+		return nil
+	}
 	dataWriter, statWriter, err := w.createStorageWriter()
 	if err != nil {
 		return err
@@ -373,6 +376,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	})
 
 	w.kvStore, err = Create(w.ctx, dataWriter, statWriter)
+	w.kvStore.rc = w.engine.rc
 
 	for i := 0; i < w.batchCount; i++ {
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)

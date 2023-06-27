@@ -42,8 +42,10 @@ func TestWriter(t *testing.T) {
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
 	require.NoError(t, err)
 
-	eg := &Engine{}
-	writer := &Writer{ctx: context.Background(), engine: eg, memtableSizeLimit: 1024 * 1024, keyAdapter: &local.NoopKeyAdapter{}}
+	eg := &Engine{rc: &RangePropertiesCollector{}}
+	eg.rc.propSizeIdxDistance = 2048
+	eg.rc.propKeysIdxDistance = 256
+	writer := &Writer{ctx: context.Background(), engine: eg, memtableSizeLimit: 8 * 1024, keyAdapter: &local.NoopKeyAdapter{}}
 	writer.tikvCodec = keyspace.CodecV1
 	writer.exStorage = storage
 	writer.filenamePrefix = "test"
