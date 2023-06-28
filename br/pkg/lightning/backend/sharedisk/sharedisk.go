@@ -436,6 +436,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	}
 	defer func() {
 		dataWriter.Close(w.ctx)
+		statWriter.Close(w.ctx)
 	}()
 	w.currentSeq++
 
@@ -453,6 +454,15 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 			return err
 		}
 	}
+
+	if w.engine.rc.currProp.Keys > 0 {
+		w.engine.rc.props = append(w.engine.rc.props, w.engine.rc.currProp)
+	}
+	_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 

@@ -88,12 +88,4 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 }
 
 func (s *KeyValueStore) Finish() error {
-	if s.rc.currProp.Keys > 0 {
-		s.rc.props = append(s.rc.props, s.rc.currProp)
-	}
-	_, err := s.statWriter.Write(s.ctx, s.rc.Encode())
-	if err != nil {
-		return err
-	}
-	return s.statWriter.Close(s.ctx)
 }
