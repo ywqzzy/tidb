@@ -88,4 +88,5 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 }
 
 func (s *KeyValueStore) Finish() error {
+	return nil
 }
