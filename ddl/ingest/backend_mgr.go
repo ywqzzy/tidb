@@ -21,7 +21,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	"github.com/pingcap/tidb/br/pkg/lightning/config"
 	"github.com/pingcap/tidb/util/generic"
 	"github.com/pingcap/tidb/util/logutil"
@@ -91,7 +93,7 @@ func (m *litBackendCtxMgr) Register(ctx context.Context, unique bool, jobID int6
 			logutil.BgLogger().Warn(LitWarnConfigError, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
 		}
-		bd, err := createLocalBackend(ctx, cfg)
+		bd, err := createRemoteBackend(ctx, cfg)
 		if err != nil {
 			logutil.BgLogger().Error(LitErrCreateBackendFail, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
@@ -125,9 +127,20 @@ func createLocalBackend(ctx context.Context, cfg *Config) (*local.Backend, error
 	return local.NewBackend(ctx, tls, backendConfig, regionSizeGetter)
 }
 
+func createRemoteBackend(ctx context.Context, _ *Config) (backend.Backend, error) {
+	return remote.NewRemoteBackend(ctx, &remote.Config{
+		Bucket:          "nfs",
+		Prefix:          "tools_test_data/sharedisk",
+		AccessKey:       "minioadmin",
+		SecretAccessKey: "minioadmin",
+		Host:            "127.0.0.1",
+		Port:            "9000",
+	})
+}
+
 const checkpointUpdateInterval = 10 * time.Minute
 
-func newBackendContext(ctx context.Context, jobID int64, be *local.Backend, cfg *config.Config, vars map[string]string, memRoot MemRoot, diskRoot DiskRoot, etcdClient *clientv3.Client) *litBackendCtx {
+func newBackendContext(ctx context.Context, jobID int64, be backend.Backend, cfg *config.Config, vars map[string]string, memRoot MemRoot, diskRoot DiskRoot, etcdClient *clientv3.Client) *litBackendCtx {
 	bCtx := &litBackendCtx{
 		SyncMap:        generic.NewSyncMap[int64, *engineInfo](10),
 		MemRoot:        memRoot,
@@ -174,7 +187,11 @@ func (m *litBackendCtxMgr) TotalDiskUsage() uint64 {
 	for _, key := range m.Keys() {
 		bc, exists := m.SyncMap.Load(key)
 		if exists {
-			_, _, bcDiskUsed, _ := local.CheckDiskQuota(bc.backend, math.MaxInt64)
+			localBackend, ok := bc.backend.(*local.Backend)
+			if !ok {
+				continue
+			}
+			_, _, bcDiskUsed, _ := local.CheckDiskQuota(localBackend, math.MaxInt64)
 			totalDiskUsed += uint64(bcDiskUsed)
 		}
 	}
@@ -186,7 +203,11 @@ func (m *litBackendCtxMgr) UpdateMemoryUsage() {
 	for _, key := range m.Keys() {
 		bc, exists := m.SyncMap.Load(key)
 		if exists {
-			curSize := bc.backend.TotalMemoryConsume()
+			localBackend, ok := bc.backend.(*local.Backend)
+			if !ok {
+				continue
+			}
+			curSize := localBackend.TotalMemoryConsume()
 			m.memRoot.ReleaseWithTag(EncodeBackendTag(bc.jobID))
 			m.memRoot.ConsumeWithTag(EncodeBackendTag(bc.jobID), curSize)
 		}
