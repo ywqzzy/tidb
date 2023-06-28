@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pingcap/failpoint"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
 	lightning "github.com/pingcap/tidb/br/pkg/lightning/config"
@@ -73,7 +74,7 @@ type litBackendCtx struct {
 	MemRoot  MemRoot
 	DiskRoot DiskRoot
 	jobID    int64
-	backend  *local.Backend
+	backend  backend.Backend
 	ctx      context.Context
 	cfg      *lightning.Config
 	sysVars  map[string]string
@@ -92,7 +93,11 @@ func (bc *litBackendCtx) CollectRemoteDuplicateRows(indexID int64, tbl table.Tab
 	// backend must be a local backend.
 	// todo: when we can separate local backend completely from tidb backend, will remove this cast.
 	//nolint:forcetypeassert
-	dupeController := bc.backend.GetDupeController(bc.cfg.TikvImporter.RangeConcurrency*2, errorMgr)
+	localBackend, ok := bc.backend.(*local.Backend)
+	if !ok {
+		return nil
+	}
+	dupeController := localBackend.GetDupeController(bc.cfg.TikvImporter.RangeConcurrency*2, errorMgr)
 	hasDupe, err := dupeController.CollectRemoteDuplicateRows(bc.ctx, tbl, tbl.Meta().Name.L, &encode.SessionOptions{
 		SQLMode: mysql.ModeStrictAllTables,
 		SysVars: bc.sysVars,
@@ -133,7 +138,11 @@ func (bc *litBackendCtx) FinishImport(indexID int64, unique bool, tbl table.Tabl
 		// backend must be a local backend.
 		// todo: when we can separate local backend completely from tidb backend, will remove this cast.
 		//nolint:forcetypeassert
-		dupeController := bc.backend.GetDupeController(bc.cfg.TikvImporter.RangeConcurrency*2, errorMgr)
+		localBackend, ok := bc.backend.(*local.Backend)
+		if !ok {
+			return nil
+		}
+		dupeController := localBackend.GetDupeController(bc.cfg.TikvImporter.RangeConcurrency*2, errorMgr)
 		hasDupe, err := dupeController.CollectRemoteDuplicateRows(bc.ctx, tbl, tbl.Meta().Name.L, &encode.SessionOptions{
 			SQLMode: mysql.ModeStrictAllTables,
 			SysVars: bc.sysVars,
@@ -215,7 +224,12 @@ func (bc *litBackendCtx) Flush(indexID int64, mode FlushMode) (flushed, imported
 
 	logutil.BgLogger().Info(LitInfoUnsafeImport, zap.Int64("index ID", indexID),
 		zap.String("usage info", bc.diskRoot.UsageInfo()))
-	err = bc.backend.UnsafeImportAndReset(bc.ctx, ei.uuid, int64(lightning.SplitRegionSize)*int64(lightning.MaxSplitRegionSizeRatio), int64(lightning.SplitRegionKeys))
+	//nolint:forcetypeassert
+	localBackend, ok := bc.backend.(*local.Backend)
+	if !ok {
+		return false, false, nil
+	}
+	err = localBackend.UnsafeImportAndReset(bc.ctx, ei.uuid, int64(lightning.SplitRegionSize)*int64(lightning.MaxSplitRegionSizeRatio), int64(lightning.SplitRegionKeys))
 	if err != nil {
 		logutil.BgLogger().Error(LitErrIngestDataErr, zap.Int64("index ID", indexID),
 			zap.String("usage info", bc.diskRoot.UsageInfo()))

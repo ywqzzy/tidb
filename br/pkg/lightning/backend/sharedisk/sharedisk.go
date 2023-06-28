@@ -18,19 +18,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"sync"
+
+	"github.com/google/uuid"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/kv"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
 	"github.com/pingcap/tidb/br/pkg/membuf"
 	"github.com/pingcap/tidb/br/pkg/storage"
+	"github.com/pingcap/tidb/keyspace"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
 	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
-	"path/filepath"
-	"strconv"
-	"sync"
 )
 
 type rangeOffsets struct {
@@ -95,8 +100,44 @@ func Decode2RangeProperty(data []byte) (*RangeProperty, error) {
 	return rp, nil
 }
 
+func NewEngine(sizeDist, keyDist uint64) *Engine {
+	return &Engine{
+		rc: &RangePropertiesCollector{
+			// TODO(tangenta): decide the preserved size of props.
+			props:               nil,
+			propSizeIdxDistance: sizeDist,
+			propKeysIdxDistance: keyDist,
+		},
+	}
+}
+
 type Engine struct {
 	rc *RangePropertiesCollector
+}
+
+func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage, engineUUID uuid.UUID, writerID int, onClose func(int, int)) *Writer {
+	// TODO(tangenta): make it configurable.
+	engine := NewEngine(2048, 256)
+	pool := membuf.NewPool()
+	filePrefix := fmt.Sprintf("%s_%d", engineUUID.String(), writerID)
+	return &Writer{
+		ctx:               ctx,
+		engine:            engine,
+		memtableSizeLimit: 8 * 1024,
+		keyAdapter:        &local.NoopKeyAdapter{},
+		exStorage:         externalStorage,
+		memBufPool:        pool,
+		kvBuffer:          pool.NewBuffer(),
+		writeBatch:        nil,
+		batchCount:        0,
+		batchSize:         0,
+		currentSeq:        0,
+		tikvCodec:         keyspace.CodecV1,
+		filenamePrefix:    filePrefix,
+		writerID:          writerID,
+		kvStore:           nil,
+		onClose:           onClose,
+	}
 }
 
 // Writer is used to write data into external storage.
@@ -109,6 +150,7 @@ type Writer struct {
 	exStorage         storage.ExternalStorage
 
 	// bytes buffer for writeBatch
+	memBufPool *membuf.Pool
 	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
 
@@ -116,9 +158,11 @@ type Writer struct {
 	batchSize  int64
 
 	currentSeq int
+	onClose    func(writerID, currentSeq int)
 
 	tikvCodec      tikv.Codec
 	filenamePrefix string
+	writerID       int
 
 	kvStore *KeyValueStore
 }
@@ -356,6 +400,30 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 	w.batchCount = 0
 	w.kvBuffer.Reset()
 	return nil
+}
+
+func (w *Writer) IsSynced() bool {
+	return false
+}
+
+func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
+	defer w.memBufPool.Destroy()
+	defer w.onClose(w.writerID, w.currentSeq)
+	err := w.flushKVs(ctx)
+	if err != nil {
+		return status(false), err
+	}
+	err = w.kvStore.Finish()
+	if err != nil {
+		return status(false), err
+	}
+	return status(true), nil
+}
+
+type status bool
+
+func (s status) Flushed() bool {
+	return bool(s)
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {

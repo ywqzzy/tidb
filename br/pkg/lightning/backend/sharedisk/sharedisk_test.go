@@ -18,6 +18,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math/rand"
+	"strconv"
+	"testing"
+
 	kv2 "github.com/pingcap/tidb/br/pkg/lightning/backend/kv"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
@@ -27,16 +31,13 @@ import (
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	"math/rand"
-	"strconv"
-	"testing"
 )
 
 func TestWriter(t *testing.T) {
 	bucket := "nfs"
 	prefix := "tools_test_data/sharedisk"
 	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
-		bucket, prefix, ak, sak, hostname, port)
+		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
 	backend, err := storage2.ParseBackend(uri, nil)
 	require.NoError(t, err)
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
