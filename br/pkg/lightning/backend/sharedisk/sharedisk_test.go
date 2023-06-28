@@ -99,9 +99,10 @@ func TestWriter(t *testing.T) {
 				break
 			}
 			i++
-			logutil.BgLogger().Info("print kv", zap.Any("key", k), zap.Any("value", v))
+			//logutil.BgLogger().Info("print kv", zap.Any("key", k), zap.Any("value", v))
 		}
 	}
+	logutil.BgLogger().Info("flush cnt", zap.Any("cnt", writer.currentSeq+1))
 
 	require.Equal(t, 20000, i)
 
@@ -119,4 +120,15 @@ func TestWriter(t *testing.T) {
 		logutil.BgLogger().Info("print prop", zap.Any("offset", prop.offset))
 	}
 
+	dataFileName := make([]string, 0)
+	for i := 0; i < writer.currentSeq; i++ {
+		dataFileName = append(dataFileName, "test/"+strconv.Itoa(i))
+	}
+	mIter, err := NewMergeIter(ctx, nil, nil, dataFileName, storage)
+	require.NoError(t, err)
+	mCnt := 0
+	for mIter.Next() {
+		mCnt++
+	}
+	require.Equal(t, 20000, mCnt)
 }

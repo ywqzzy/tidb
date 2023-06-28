@@ -46,15 +46,15 @@ func (h *kvPairHeap) Push(x interface{}) {
 	*h = append(*h, x.(*kvPair))
 }
 
-func (h kvPairHeap) Pop() interface{} {
-	old := h
+func (h *kvPairHeap) Pop() interface{} {
+	old := *h
 	n := len(old)
 	x := old[n-1]
-	h = old[0 : n-1]
+	*h = old[0 : n-1]
 	return x
 }
 
-type mergeIter struct {
+type MergeIter struct {
 	startKey       []byte
 	endKey         []byte
 	dataFilePaths  []string
@@ -68,8 +68,8 @@ type mergeIter struct {
 	err error
 }
 
-func NewMergeIter(ctx context.Context, startKey, endKey []byte, paths []string, exStorage storage.ExternalStorage) (*mergeIter, error) {
-	it := &mergeIter{
+func NewMergeIter(ctx context.Context, startKey, endKey []byte, paths []string, exStorage storage.ExternalStorage) (*MergeIter, error) {
+	it := &MergeIter{
 		startKey:      startKey,
 		endKey:        endKey,
 		dataFilePaths: paths,
@@ -77,7 +77,8 @@ func NewMergeIter(ctx context.Context, startKey, endKey []byte, paths []string, 
 	it.dataFileReader = make([]*DataFileReader, 0, len(paths))
 	it.kvHeap = make([]*kvPair, 0, len(paths))
 	for i, path := range paths {
-		rd := DataFileReader{ctx: ctx, name: path}
+		rd := DataFileReader{ctx: ctx, name: path, exStorage: exStorage}
+		rd.readBuffer = make([]byte, 4096)
 		it.dataFileReader = append(it.dataFileReader, &rd)
 		k, v, err := rd.GetNextKV()
 		if err != nil {
@@ -93,30 +94,30 @@ func NewMergeIter(ctx context.Context, startKey, endKey []byte, paths []string, 
 	return it, nil
 }
 
-func (i *mergeIter) Seek(key []byte) bool {
+func (i *MergeIter) Seek(key []byte) bool {
 	// Don't support.
 	return false
 }
 
-func (i *mergeIter) Error() error {
+func (i *MergeIter) Error() error {
 	return i.err
 }
 
-func (i *mergeIter) First() bool {
+func (i *MergeIter) First() bool {
 	// Don't support.
 	return false
 }
 
-func (i *mergeIter) Last() bool {
+func (i *MergeIter) Last() bool {
 	// Don't support.
 	return false
 }
 
-func (i *mergeIter) Valid() bool {
+func (i *MergeIter) Valid() bool {
 	return i.currKV != nil
 }
 
-func (i *mergeIter) Next() bool {
+func (i *MergeIter) Next() bool {
 	if i.kvHeap.Len() == 0 {
 		return false
 	}
@@ -133,18 +134,18 @@ func (i *mergeIter) Next() bool {
 	return true
 }
 
-func (i *mergeIter) Key() []byte {
+func (i *MergeIter) Key() []byte {
 	return i.currKV.key
 }
 
-func (i *mergeIter) Value() []byte {
+func (i *MergeIter) Value() []byte {
 	return i.currKV.value
 }
 
-func (i *mergeIter) Close() []byte {
+func (i *MergeIter) Close() []byte {
 	return i.firstKey
 }
 
-func (i *mergeIter) OpType() sst.Pair_OP {
+func (i *MergeIter) OpType() sst.Pair_OP {
 	return sst.Pair_Put
 }
