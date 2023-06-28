@@ -73,6 +73,7 @@ func TestWriter(t *testing.T) {
 		kvs = append(kvs, kv)
 	}
 	err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+	err = writer.flushKVs(context.Background())
 	require.NoError(t, err)
 	err = writer.kvStore.Finish()
 	require.NoError(t, err)
@@ -86,22 +87,25 @@ func TestWriter(t *testing.T) {
 		}
 	}()
 
-	dataReader := DataFileReader{ctx: ctx, name: "test/0", exStorage: storage}
-	dataReader.readBuffer = make([]byte, 4096)
-
 	i := 0
-	for {
-		k, v, err := dataReader.GetNextKV()
-		require.NoError(t, err)
-		if k == nil && v == nil {
-			break
+	for _, fileName := range []string{"test/0", "test/1", "test/2"} {
+		dataReader := DataFileReader{ctx: ctx, name: fileName, exStorage: storage}
+		dataReader.readBuffer = make([]byte, 4096)
+
+		for {
+			k, v, err := dataReader.GetNextKV()
+			require.NoError(t, err)
+			if k == nil && v == nil {
+				break
+			}
+			i++
+			logutil.BgLogger().Info("print kv", zap.Any("key", k), zap.Any("value", v))
 		}
-		i++
-		logutil.BgLogger().Info("print kv", zap.Any("key", k), zap.Any("value", v))
 	}
+
 	require.Equal(t, 20000, i)
 
-	statReader := statFileReader{ctx: ctx, name: "test_stat/0", exStorage: storage}
+	statReader := statFileReader{ctx: ctx, name: "test_stat/2", exStorage: storage}
 	statReader.readBuffer = make([]byte, 4096)
 
 	j := 0

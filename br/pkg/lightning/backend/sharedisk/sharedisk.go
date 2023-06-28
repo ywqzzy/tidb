@@ -120,17 +120,16 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage, eng
 	engine := NewEngine(2048, 256)
 	pool := membuf.NewPool()
 	filePrefix := fmt.Sprintf("%s_%d", engineUUID.String(), writerID)
+	writeBatchSize := 8 * 1024
 	return &Writer{
 		ctx:               ctx,
 		engine:            engine,
-		memtableSizeLimit: 8 * 1024,
+		memtableSizeLimit: writeBatchSize,
 		keyAdapter:        &local.NoopKeyAdapter{},
 		exStorage:         externalStorage,
 		memBufPool:        pool,
 		kvBuffer:          pool.NewBuffer(),
-		writeBatch:        nil,
-		batchCount:        0,
-		batchSize:         0,
+		writeBatch:        make([]common.KvPair, 0, writeBatchSize),
 		currentSeq:        0,
 		tikvCodec:         keyspace.CodecV1,
 		filenamePrefix:    filePrefix,
@@ -145,7 +144,7 @@ type Writer struct {
 	ctx context.Context
 	sync.Mutex
 	engine            *Engine
-	memtableSizeLimit int64
+	memtableSizeLimit int
 	keyAdapter        local.KeyAdapter
 	exStorage         storage.ExternalStorage
 
@@ -153,9 +152,6 @@ type Writer struct {
 	memBufPool *membuf.Pool
 	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
-
-	batchCount int
-	batchSize  int64
 
 	currentSeq int
 	onClose    func(writerID, currentSeq int)
@@ -372,33 +368,21 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 	w.Lock()
 	defer w.Unlock()
 
-	l := len(w.writeBatch)
-	cnt := w.batchCount
 	keyAdapter := w.keyAdapter
 	for _, pair := range kvs {
-		w.batchSize += int64(len(pair.Key) + len(pair.Val))
 		buf := w.kvBuffer.AllocBytes(keyAdapter.EncodedLen(pair.Key, pair.RowID))
 		key := keyAdapter.Encode(buf[:0], pair.Key, pair.RowID)
 		val := w.kvBuffer.AddBytes(pair.Val)
-		if cnt < l {
-			w.writeBatch[cnt].Key = key
-			w.writeBatch[cnt].Val = val
-		} else {
-			w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
-		}
-		cnt++
-	}
-	w.batchCount = cnt
-
-	if w.batchSize > w.memtableSizeLimit {
-		if err := w.flushKVs(ctx); err != nil {
-			return err
+		w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
+		if len(w.writeBatch) >= w.memtableSizeLimit {
+			if err := w.flushKVs(ctx); err != nil {
+				return err
+			}
+			w.writeBatch = w.writeBatch[:0]
+			w.kvBuffer.Reset()
 		}
 	}
 
-	w.batchSize = 0
-	w.batchCount = 0
-	w.kvBuffer.Reset()
 	return nil
 }
 
@@ -427,9 +411,6 @@ func (s status) Flushed() bool {
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {
-	if w.batchCount == 0 {
-		return nil
-	}
 	dataWriter, statWriter, err := w.createStorageWriter()
 	if err != nil {
 		return err
@@ -439,14 +420,14 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	}()
 	w.currentSeq++
 
-	slices.SortFunc(w.writeBatch[:w.batchCount], func(i, j common.KvPair) bool {
+	slices.SortFunc(w.writeBatch, func(i, j common.KvPair) bool {
 		return bytes.Compare(i.Key, j.Key) < 0
 	})
 
 	w.kvStore, err = Create(w.ctx, dataWriter, statWriter)
 	w.kvStore.rc = w.engine.rc
 
-	for i := 0; i < w.batchCount; i++ {
+	for i := 0; i < len(w.writeBatch); i++ {
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)
 		logutil.BgLogger().Info("add key", zap.Any("key", w.writeBatch[i].Key), zap.Any("value", w.writeBatch[i].Val))
 		if err != nil {
