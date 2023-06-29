@@ -21,6 +21,7 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/disttask/framework/proto"
+	"github.com/pingcap/tidb/disttask/framework/storage"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
@@ -130,7 +131,7 @@ func (s *InternalSchedulerImpl) Run(ctx context.Context, task *proto.Task) error
 		concurrentSubtask = true
 	}
 	for {
-		// check if any error occurs
+		// check if any error occurs.
 		if err := s.getError(); err != nil {
 			return err
 		}
@@ -141,16 +142,27 @@ func (s *InternalSchedulerImpl) Run(ctx context.Context, task *proto.Task) error
 			break
 		}
 		if subtask == nil {
-			break
-		}
-		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRunning, "")
-		if err := s.getError(); err != nil {
-			break
-		}
-		s.subtaskWg.Add(1)
-		s.runSubtask(runCtx, scheduler, subtask, task.Step, minimalTaskCh)
-		if !concurrentSubtask {
-			s.subtaskWg.Wait()
+			task, err = s.taskTable.GetGlobalTaskByID(task.ID)
+			if err != nil {
+				s.onError(err)
+				break
+			}
+			if task.Flag == proto.TaskSubStateDispatching {
+				// TODO: change time.
+				time.Sleep(500 * time.Millisecond)
+			} else {
+				break
+			}
+		} else {
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRunning, nil)
+			if err := s.getError(); err != nil {
+				break
+			}
+			s.subtaskWg.Add(1)
+			s.runSubtask(runCtx, scheduler, subtask, task.Step, minimalTaskCh)
+			if !concurrentSubtask {
+				s.subtaskWg.Wait()
+			}
 		}
 	}
 	s.subtaskWg.Wait()
@@ -162,9 +174,9 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 	if err != nil {
 		s.onError(err)
 		if errors.Cause(err) == context.Canceled {
-			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, "")
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, nil)
 		} else {
-			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError().Error())
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError())
 		}
 		s.subtaskWg.Done()
 		return
@@ -208,9 +220,9 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 	}
 	if err := s.getError(); err != nil {
 		if errors.Cause(err) == context.Canceled {
-			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, "")
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, nil)
 		} else {
-			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError().Error())
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError())
 		}
 		return
 	}
@@ -236,7 +248,24 @@ func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, m
 		s.onError(err)
 		return
 	}
-
+	failpoint.Inject("MockExecutorRunErr", func(val failpoint.Value) {
+		if val.(bool) {
+			s.onError(errors.New("MockExecutorRunErr"))
+		}
+	})
+	failpoint.Inject("MockExecutorRunCancel", func(val failpoint.Value) {
+		if taskID, ok := val.(int); ok {
+			mgr, err := storage.GetTaskManager()
+			if err != nil {
+				logutil.BgLogger().Error("get task manager failed", zap.Error(err))
+			} else {
+				err = mgr.CancelGlobalTask(int64(taskID))
+				if err != nil {
+					logutil.BgLogger().Error("cancel global task failed", zap.Error(err))
+				}
+			}
+		}
+	})
 	if err = executor.Run(minimalTaskCtx); err != nil {
 		s.onError(err)
 	}
@@ -260,12 +289,22 @@ func (s *InternalSchedulerImpl) Rollback(ctx context.Context, task *proto.Task) 
 		}
 
 		if subtask == nil {
-			break
-		}
-
-		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, "")
-		if err = s.getError(); err != nil {
-			return err
+			task, err = s.taskTable.GetGlobalTaskByID(task.ID)
+			if err != nil {
+				s.onError(err)
+				break
+			}
+			if task.Flag == proto.TaskSubStateDispatching {
+				// TODO: change time.
+				time.Sleep(500 * time.Millisecond)
+			} else {
+				break
+			}
+		} else {
+			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, nil)
+			if err = s.getError(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -283,17 +322,17 @@ func (s *InternalSchedulerImpl) Rollback(ctx context.Context, task *proto.Task) 
 		logutil.BgLogger().Warn("scheduler rollback a step, but no subtask in revert_pending state", zap.Any("step", task.Step))
 		return nil
 	}
-	s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverting, "")
+	s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverting, nil)
 	if err := s.getError(); err != nil {
 		return err
 	}
 
 	err = scheduler.Rollback(rollbackCtx)
 	if err != nil {
-		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRevertFailed, "")
+		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRevertFailed, nil)
 		s.onError(err)
 	} else {
-		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverted, "")
+		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverted, nil)
 	}
 	return s.getError()
 }
@@ -350,7 +389,7 @@ func (s *InternalSchedulerImpl) resetError() {
 	s.mu.err = nil
 }
 
-func (s *InternalSchedulerImpl) updateSubtaskStateAndError(id int64, state string, subTaskErr string) {
+func (s *InternalSchedulerImpl) updateSubtaskStateAndError(id int64, state string, subTaskErr error) {
 	err := s.taskTable.UpdateSubtaskStateAndError(id, state, subTaskErr)
 	if err != nil {
 		s.onError(err)

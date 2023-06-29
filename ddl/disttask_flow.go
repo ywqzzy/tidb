@@ -49,71 +49,83 @@ func (*litBackfillFlowHandle) OnTicker(_ context.Context, _ *proto.Task) {
 }
 
 // ProcessNormalFlow processes the normal flow.
-func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskHandle, gTask *proto.Task) (metas [][]byte, err error) {
+func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskHandle, gTask *proto.Task, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
 	var globalTaskMeta BackfillGlobalMeta
-	if err = json.Unmarshal(gTask.Meta, &globalTaskMeta); err != nil {
-		return nil, err
+	if err := json.Unmarshal(gTask.Meta, &globalTaskMeta); err != nil {
+		errChan <- err
+		return
 	}
 
 	d, ok := h.d.(*ddl)
 	if !ok {
-		return nil, errors.New("The getDDL result should be the type of *ddl")
+		errChan <- errors.New("The getDDL result should be the type of *ddl")
+		return
 	}
 
 	job := &globalTaskMeta.Job
 	var tblInfo *model.TableInfo
+	var err error
 	err = kv.RunInNewTxn(d.ctx, d.store, true, func(ctx context.Context, txn kv.Transaction) error {
 		tblInfo, err = meta.NewMeta(txn).GetTable(job.SchemaID, job.TableID)
 		return err
 	})
 	if err != nil {
-		return nil, err
+		errChan <- err
+		return
 	}
 
 	var subTaskMetas [][]byte
 	if tblInfo.Partition == nil {
 		switch gTask.Step {
-		case proto.StepOne:
+		case proto.StepTwo:
 			serverNodes, err := dispatcher.GenerateSchedulerNodes(d.ctx)
 			if err != nil {
-				return nil, err
+				errChan <- err
+				return
 			}
 			subTaskMetas = make([][]byte, 0, len(serverNodes))
 			dummyMeta := &BackfillSubTaskMeta{}
 			metaBytes, err := json.Marshal(dummyMeta)
 			if err != nil {
-				return nil, err
+				errChan <- err
+				return
 			}
 			for range serverNodes {
 				subTaskMetas = append(subTaskMetas, metaBytes)
 			}
-			gTask.Step = proto.StepTwo
-			return subTaskMetas, nil
-		case proto.StepTwo:
-			return nil, nil
+			metasChan <- subTaskMetas
+			doneChan <- true
+			return
+		case proto.StepFinished:
+			doneChan <- true
+			return
 		default:
 		}
 		tbl, err := getTable(d.store, job.SchemaID, tblInfo)
 		if err != nil {
-			return nil, err
+			errChan <- err
+			return
 		}
 		ver, err := getValidCurrentVersion(d.store)
 		if err != nil {
-			return nil, errors.Trace(err)
+			errChan <- errors.Trace(err)
+			return
 		}
 		startKey, endKey, err := getTableRange(d.jobContext(job.ID), d.ddlCtx, tbl.(table.PhysicalTable), ver.Ver, job.Priority)
 		if startKey == nil && endKey == nil {
 			// Empty table.
-			gTask.Step = proto.StepOne
-			return nil, nil
+			doneChan <- true
+			return
 		}
 		if err != nil {
-			return nil, errors.Trace(err)
+			errChan <- errors.Trace(err)
+			return
 		}
 		regionCache := d.store.(helper.Storage).GetRegionCache()
 		recordRegionMetas, err := regionCache.LoadRegionsInKeyRange(tikv.NewBackofferWithVars(context.Background(), 20000, nil), startKey, endKey)
 		if err != nil {
-			return nil, err
+			errChan <- err
+			return
 		}
 
 		subTaskMetas = make([][]byte, 0, 100)
@@ -136,14 +148,16 @@ func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatche
 			}
 			metaBytes, err := json.Marshal(subTaskMeta)
 			if err != nil {
-				return nil, err
+				errChan <- err
+				return
 			}
 			subTaskMetas = append(subTaskMetas, metaBytes)
 		}
 	} else {
-		if gTask.State != proto.TaskStatePending {
-			// This flow for partition table has only one step, finish task when it is not pending
-			return nil, nil
+		// This flow for partition table has only one step, finish task when it is not StepOne
+		if gTask.Step != proto.StepOne {
+			doneChan <- true
+			return
 		}
 
 		defs := tblInfo.Partition.Definitions
@@ -160,23 +174,22 @@ func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatche
 
 			metaBytes, err := json.Marshal(subTaskMeta)
 			if err != nil {
-				return nil, err
+				errChan <- err
+				return
 			}
 
 			subTaskMetas = append(subTaskMetas, metaBytes)
 		}
 	}
-
-	gTask.Step = proto.StepOne
-	return subTaskMetas, nil
+	metasChan <- subTaskMetas
+	doneChan <- true
 }
 
-func (*litBackfillFlowHandle) ProcessErrFlow(_ context.Context, _ dispatcher.TaskHandle, task *proto.Task, receiveErr [][]byte) (meta []byte, err error) {
+func (*litBackfillFlowHandle) ProcessErrFlow(ctx context.Context, h dispatcher.TaskHandle, gTask *proto.Task, receiveErr []error, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
 	// We do not need extra meta info when rolling back
 	firstErr := receiveErr[0]
-	task.Error = firstErr
-
-	return nil, nil
+	gTask.Error = firstErr
+	doneChan <- true
 }
 
 func (*litBackfillFlowHandle) GetEligibleInstances(ctx context.Context, _ *proto.Task) ([]*infosync.ServerInfo, error) {
