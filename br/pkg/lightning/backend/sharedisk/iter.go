@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+
 	sst "github.com/pingcap/kvproto/pkg/import_sstpb"
 	"github.com/pingcap/tidb/br/pkg/storage"
 )
@@ -195,10 +196,8 @@ type MergePropIter struct {
 	err error
 }
 
-func NewMergePropIter(ctx context.Context, startKey, endKey []byte, paths []string, exStorage storage.ExternalStorage) (*MergePropIter, error) {
+func NewMergePropIter(ctx context.Context, paths []string, exStorage storage.ExternalStorage) (*MergePropIter, error) {
 	it := &MergePropIter{
-		startKey:      startKey,
-		endKey:        endKey,
 		statFilePaths: paths,
 	}
 	it.propHeap = make([]*prop, 0, len(paths))

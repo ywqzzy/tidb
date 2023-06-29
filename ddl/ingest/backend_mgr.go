@@ -93,7 +93,7 @@ func (m *litBackendCtxMgr) Register(ctx context.Context, unique bool, jobID int6
 			logutil.BgLogger().Warn(LitWarnConfigError, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
 		}
-		bd, err := createRemoteBackend(ctx, cfg)
+		bd, err := createRemoteBackend(ctx, cfg, jobID)
 		if err != nil {
 			logutil.BgLogger().Error(LitErrCreateBackendFail, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
@@ -127,7 +127,7 @@ func createLocalBackend(ctx context.Context, cfg *Config) (*local.Backend, error
 	return local.NewBackend(ctx, tls, backendConfig, regionSizeGetter)
 }
 
-func createRemoteBackend(ctx context.Context, _ *Config) (backend.Backend, error) {
+func createRemoteBackend(ctx context.Context, _ *Config, jobID int64) (backend.Backend, error) {
 	return remote.NewRemoteBackend(ctx, &remote.Config{
 		Bucket:          "nfs",
 		Prefix:          "tools_test_data/sharedisk",
@@ -135,7 +135,7 @@ func createRemoteBackend(ctx context.Context, _ *Config) (backend.Backend, error
 		SecretAccessKey: "minioadmin",
 		Host:            "127.0.0.1",
 		Port:            "9000",
-	})
+	}, jobID)
 }
 
 const checkpointUpdateInterval = 10 * time.Minute

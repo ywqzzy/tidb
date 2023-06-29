@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -115,21 +114,23 @@ type Engine struct {
 	rc *RangePropertiesCollector
 }
 
-func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage, engineUUID uuid.UUID, writerID int, onClose func(int, int)) *Writer {
+const WriteBatchSize = 8 * 1024
+
+func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
+	jobID int64, engineUUID uuid.UUID, writerID int, onClose func(int, int)) *Writer {
 	// TODO(tangenta): make it configurable.
 	engine := NewEngine(2048, 256)
 	pool := membuf.NewPool()
-	filePrefix := fmt.Sprintf("%s_%d", engineUUID.String(), writerID)
-	writeBatchSize := 8 * 1024
+	filePrefix := filepath.Join(strconv.Itoa(int(jobID)), engineUUID.String(), strconv.Itoa(writerID))
 	return &Writer{
 		ctx:               ctx,
 		engine:            engine,
-		memtableSizeLimit: writeBatchSize,
+		memtableSizeLimit: WriteBatchSize,
 		keyAdapter:        &local.NoopKeyAdapter{},
 		exStorage:         externalStorage,
 		memBufPool:        pool,
 		kvBuffer:          pool.NewBuffer(),
-		writeBatch:        make([]common.KvPair, 0, writeBatchSize),
+		writeBatch:        make([]common.KvPair, 0, WriteBatchSize),
 		currentSeq:        0,
 		tikvCodec:         keyspace.CodecV1,
 		filenamePrefix:    filePrefix,
@@ -430,7 +431,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 
 	for i := 0; i < len(w.writeBatch); i++ {
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)
-		logutil.BgLogger().Info("add key", zap.Any("key", w.writeBatch[i].Key), zap.Any("value", w.writeBatch[i].Val))
+		//logutil.BgLogger().Info("add key", zap.Any("key", w.writeBatch[i].Key), zap.Any("value", w.writeBatch[i].Val))
 		if err != nil {
 			return err
 		}
