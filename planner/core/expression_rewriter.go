@@ -156,7 +156,7 @@ func (b *PlanBuilder) getExpressionRewriter(ctx context.Context, p LogicalPlan) 
 	}()
 
 	if len(b.rewriterPool) < b.rewriterCounter {
-		rewriter = &expressionRewriter{p: p, b: b, sctx: b.ctx, ctx: ctx}
+		rewriter = &expressionRewriter{p: p, b: b, sctx: b.ctx, ctx: ctx, rollExpand: b.currentBlockExpand}
 		rewriter.sctx.SetValue(expression.TiDBDecodeKeyFunctionKey, decodeKeyFromString)
 		b.rewriterPool = append(b.rewriterPool, rewriter)
 		return
@@ -174,10 +174,11 @@ func (b *PlanBuilder) getExpressionRewriter(ctx context.Context, p LogicalPlan) 
 	rewriter.ctxNameStk = rewriter.ctxNameStk[:0]
 	rewriter.ctx = ctx
 	rewriter.err = nil
+	rewriter.rollExpand = b.currentBlockExpand
 	return
 }
 
-func (b *PlanBuilder) rewriteExprNode(rewriter *expressionRewriter, exprNode ast.ExprNode, asScalar bool) (expression.Expression, LogicalPlan, error) {
+func (*PlanBuilder) rewriteExprNode(rewriter *expressionRewriter, exprNode ast.ExprNode, asScalar bool) (expression.Expression, LogicalPlan, error) {
 	if rewriter.p != nil {
 		curColLen := rewriter.p.Schema().Len()
 		defer func() {
@@ -244,6 +245,8 @@ type expressionRewriter struct {
 	// NOTE: This value can be changed during expression rewritten.
 	disableFoldCounter int
 	tryFoldCounter     int
+
+	rollExpand *LogicalExpand
 }
 
 func (er *expressionRewriter) ctxStackLen() int {
@@ -324,9 +327,12 @@ func (er *expressionRewriter) buildSubquery(ctx context.Context, subq *ast.Subqu
 		outerSchema := er.schema.Clone()
 		er.b.outerSchemas = append(er.b.outerSchemas, outerSchema)
 		er.b.outerNames = append(er.b.outerNames, er.names)
+		er.b.outerBlockExpand = append(er.b.outerBlockExpand, er.b.currentBlockExpand)
 		defer func() {
 			er.b.outerSchemas = er.b.outerSchemas[0 : len(er.b.outerSchemas)-1]
 			er.b.outerNames = er.b.outerNames[0 : len(er.b.outerNames)-1]
+			er.b.currentBlockExpand = er.b.outerBlockExpand[len(er.b.outerBlockExpand)-1]
+			er.b.outerBlockExpand = er.b.outerBlockExpand[0 : len(er.b.outerBlockExpand)-1]
 		}()
 	}
 	// Store the old value before we enter the subquery and reset they to default value.
@@ -861,10 +867,10 @@ func (er *expressionRewriter) handleExistSubquery(ctx context.Context, v *ast.Ex
 		er.ctxStackAppend(er.p.Schema().Columns[er.p.Schema().Len()-1], er.p.OutputNames()[er.p.Schema().Len()-1])
 	} else {
 		// We don't want nth_plan hint to affect separately executed subqueries here, so disable nth_plan temporarily.
-		NthPlanBackup := er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan
+		nthPlanBackup := er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan
 		er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = -1
 		physicalPlan, _, err := DoOptimize(ctx, er.sctx, er.b.optFlag, np)
-		er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = NthPlanBackup
+		er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = nthPlanBackup
 		if err != nil {
 			er.err = err
 			return v, true
@@ -1072,10 +1078,10 @@ func (er *expressionRewriter) handleScalarSubquery(ctx context.Context, v *ast.S
 		return v, true
 	}
 	// We don't want nth_plan hint to affect separately executed subqueries here, so disable nth_plan temporarily.
-	NthPlanBackup := er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan
+	nthPlanBackup := er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan
 	er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = -1
 	physicalPlan, _, err := DoOptimize(ctx, er.sctx, er.b.optFlag, np)
-	er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = NthPlanBackup
+	er.sctx.GetSessionVars().StmtCtx.StmtHints.ForceNthPlan = nthPlanBackup
 	if err != nil {
 		er.err = err
 		return v, true
@@ -1341,7 +1347,7 @@ func (er *expressionRewriter) newFunction(funcName string, retType *types.FieldT
 	return
 }
 
-func (er *expressionRewriter) checkTimePrecision(ft *types.FieldType) error {
+func (*expressionRewriter) checkTimePrecision(ft *types.FieldType) error {
 	if ft.EvalType() == types.ETDuration && ft.GetDecimal() > types.MaxFsp {
 		return errTooBigPrecision.GenWithStackByArgs(ft.GetDecimal(), "CAST", types.MaxFsp)
 	}
@@ -1427,10 +1433,19 @@ func (er *expressionRewriter) rewriteVariable(v *ast.VariableExpr) {
 	}
 	nativeVal, nativeType, nativeFlag := sysVar.GetNativeValType(val)
 	e := expression.DatumToConstant(nativeVal, nativeType, nativeFlag)
-	charset, _ := sessionVars.GetSystemVar(variable.CharacterSetConnection)
-	e.GetType().SetCharset(charset)
-	collate, _ := sessionVars.GetSystemVar(variable.CollationConnection)
-	e.GetType().SetCollate(collate)
+	switch nativeType {
+	case mysql.TypeVarString:
+		charset, _ := sessionVars.GetSystemVar(variable.CharacterSetConnection)
+		e.GetType().SetCharset(charset)
+		collate, _ := sessionVars.GetSystemVar(variable.CollationConnection)
+		e.GetType().SetCollate(collate)
+	case mysql.TypeLong, mysql.TypeLonglong:
+		e.GetType().SetCharset(charset.CharsetBin)
+		e.GetType().SetCollate(charset.CollationBin)
+	default:
+		er.err = errors.Errorf("Not supported type(%x) in GetNativeValType() function", nativeType)
+		return
+	}
 	er.ctxStackAppend(e, types.EmptyName)
 }
 
@@ -1999,6 +2014,50 @@ func (er *expressionRewriter) funcCallToExpression(v *ast.FuncCallExpr) {
 			function, er.err = expression.NewFunctionBase(er.sctx, v.FnName.L, &v.Type, args...)
 			c := &expression.Constant{Value: types.NewDatum(nil), RetType: function.GetType().Clone(), DeferredExpr: function}
 			er.ctxStackAppend(c, types.EmptyName)
+		}
+	} else if v.FnName.L == ast.Grouping {
+		// grouping function should fetch the underlying grouping-sets meta and rewrite the args here.
+		// eg: grouping(a) actually is try to find in which grouping-set that the column 'a' is remained,
+		// collecting those gid as a collection and filling it into the grouping function meta. Besides,
+		// the first arg of grouping function should be rewritten as gid column defined/passed by Expand
+		// from the bottom up.
+		if er.rollExpand == nil {
+			er.err = errors.New("no rollup expand found")
+			er.ctxStackAppend(nil, types.EmptyName)
+		} else {
+			// whether there is some duplicate grouping sets, gpos is only be used in shuffle keys and group keys
+			// rather than grouping function.
+			// eg: rollup(a,a,b), the decided grouping sets are {a,a,b},{a,a,null},{a,null,null},{null,null,null}
+			// for the second and third grouping set: {a,a,null} and {a,null,null}, a here is the col ref of original
+			// column `a`. So from the static layer, this two grouping set are equivalent, we don't need to copy col
+			// `a double times at the every beginning and resort to gpos to distinguish them.
+			//  {col-a, col-b, gid, gpos}
+			//  {a, b, 0, 1}, {a, null, 1, 2}, {a, null, 1, 3}, {null, null, 2, 4}
+			// grouping function still only need to care about gid is enough, gpos what group and shuffle keys cared.
+			newArg := er.rollExpand.GID.Clone()
+			function, er.err = er.newFunction(v.FnName.L, &v.Type, newArg)
+			if er.err == nil {
+				if scalarFunc, ok := function.(*expression.ScalarFunction); ok {
+					if scalarFunc.FuncName.L == ast.Grouping {
+						if len(args) > 64 {
+							er.err = ErrInvalidNumberOfArgs.GenWithStackByArgs("GROUPING", 64)
+							er.ctxStackAppend(nil, types.EmptyName)
+						} else {
+							// resolve grouping args in group by items or not.
+							resolvedCols, err := er.rollExpand.resolveGroupingFuncArgsInGroupBy(args)
+							if err != nil {
+								er.err = err
+								er.ctxStackAppend(nil, types.EmptyName)
+							} else {
+								// rewrite the meta.
+								er.err = scalarFunc.Function.(*expression.BuiltinGroupingImplSig).
+									SetMetadata(er.rollExpand.GroupingMode, er.rollExpand.GenerateGroupingMarks(resolvedCols))
+							}
+						}
+					}
+				}
+			}
+			er.ctxStackAppend(function, types.EmptyName)
 		}
 	} else {
 		function, er.err = er.newFunction(v.FnName.L, &v.Type, args...)
