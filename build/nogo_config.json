@@ -492,6 +492,7 @@
       "dumpling/export/sql_type.go": "please fix it",
       ".*_test\\.go$": "ignore generated code",
       ".*_generated\\.go$": "ignore generated code",
+<<<<<<< Updated upstream
       "planner/core/resolve_indices.go": "planner/core/resolve_indices.go",
       "planner/core/rule_aggregation_push_down.go": "planner/core/rule_aggregation_push_down.go",
       "planner/core/rule_max_min_eliminate.go": "planner/core/rule_max_min_eliminate.go",
@@ -507,6 +508,8 @@
       "planner/core/preprocess.go": "planner/core/preprocess.go",
       "planner/core/plan_cache_lru.go": "planner/core/plan_cache_lru.go",
       "planner/core/common_plans.go": "planner/core/common_plans.go",
+=======
+>>>>>>> Stashed changes
       "plugin/conn_ip_example/": "plugin/conn_ip_example/"
     },
     "only_files": {
@@ -523,7 +526,6 @@
       "server/conn.go": "server/conn.go",
       "server/conn_stmt.go": "server/conn_stmt.go",
       "server/conn_test.go": "server/conn_test.go",
-      "planner/core/rule_partition_eliminate.go": "planner/core/rule_partition_eliminate code",
       "distsql/": "ignore distsql code",
       "disttask": "disttask code",
       "dumpling/export": "dumpling/export code",

@@ -60,8 +60,13 @@ go_library(
         "@com_github_pingcap_log//:log",
         "@com_github_tikv_client_go_v2//config",
         "@com_github_tikv_client_go_v2//tikv",
+<<<<<<< Updated upstream
         "@com_github_tikv_pd_client//:client",
         "@io_k8s_utils//strings/slices",
+=======
+        "@com_github_tikv_client_go_v2//util",
+        "@org_golang_x_exp//slices",
+>>>>>>> Stashed changes
         "@org_golang_x_sync//errgroup",
         "@org_uber_go_multierr//:multierr",
         "@org_uber_go_zap//:zap",

@@ -173,33 +173,56 @@ func (h *flowHandle) unregisterTask(ctx context.Context, task *proto.Task) {
 	}
 }
 
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.Task) ([][]byte, error) {
 	logger := logutil.BgLogger().With(zap.String("component", "dispatcher"), zap.String("type", gTask.Type), zap.Int64("ID", gTask.ID))
+=======
+func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.Task, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
+	var resSubtaskMeta [][]byte
+	logger := logutil.BgLogger().With(
+		zap.String("type", gTask.Type),
+		zap.Int64("task-id", gTask.ID),
+		zap.String("step", stepStr(gTask.Step)),
+	)
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 	taskMeta := &TaskMeta{}
 	err := json.Unmarshal(gTask.Meta, taskMeta)
 	if err != nil {
-		return nil, err
+		errChan <- err
+		return
 	}
 	logger.Info("process normal flow", zap.Any("task_meta", taskMeta), zap.Any("step", gTask.Step))
 
 	switch gTask.Step {
-	case proto.StepInit:
+	case StepImport:
 		if err := preProcess(ctx, handle, gTask, taskMeta, logger); err != nil {
-			return nil, err
+			errChan <- err
+			return
 		}
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 		subtaskMetas, err := generateSubtaskMetas(ctx, taskMeta)
+=======
+		if err = startJob(ctx, handle, taskMeta); err != nil {
+			errChan <- err
+			return
+		}
+		subtaskMetas, err := generateImportStepMetas(ctx, taskMeta)
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 		if err != nil {
-			return nil, err
+			errChan <- err
+			return
 		}
 		logger.Info("generate subtasks", zap.Any("subtask_metas", subtaskMetas))
 		metaBytes := make([][]byte, 0, len(subtaskMetas))
 		for _, subtaskMeta := range subtaskMetas {
 			bs, err := json.Marshal(subtaskMeta)
 			if err != nil {
-				return nil, err
+				errChan <- err
+				return
 			}
 			metaBytes = append(metaBytes, bs)
 		}
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 		gTask.Step = Import
 		return metaBytes, nil
 	case Import:
@@ -210,25 +233,84 @@ func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.Ta
 		}
 		gTask.State = proto.TaskStateSucceed
 		return nil, nil
+=======
+		metasChan <- metaBytes
+		doneChan <- true
+	case StepPostProcess:
+		h.switchTiKV2NormalMode(ctx, gTask, logger)
+		failpoint.Inject("clearLastSwitchTime", func() {
+			h.lastSwitchTime.Store(time.Time{})
+		})
+		stepMeta, err2 := toPostProcessStep(handle, gTask, taskMeta)
+		if err2 != nil {
+			errChan <- err
+			return
+		}
+		if err = job2Step(ctx, taskMeta, importer.JobStepValidating); err != nil {
+			errChan <- err
+			return
+		}
+		logger.Info("move to post-process step ", zap.Any("result", taskMeta.Result),
+			zap.Any("step-meta", stepMeta))
+		bs, err := json.Marshal(stepMeta)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		failpoint.Inject("failWhenDispatchPostProcessSubtask", func() {
+			errChan <- err
+			failpoint.Return()
+		})
+		metasChan <- [][]byte{bs}
+		doneChan <- true
+	case StepFinish:
+		doneChan <- true
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 	default:
-		return nil, errors.Errorf("unknown step %d", gTask.Step)
+		errChan <- errors.Errorf("unknown step %d", gTask.Step)
 	}
 }
 
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 func (h *flowHandle) ProcessErrFlow(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.Task, receiveErr [][]byte) ([]byte, error) {
 	logger := logutil.BgLogger().With(zap.String("component", "dispatcher"), zap.String("type", gTask.Type), zap.Int64("ID", gTask.ID))
 	logger.Info("process error flow", zap.ByteStrings("error message", receiveErr))
 	h.switchTiKV2NormalMode(ctx, logger)
 	h.unregisterTask(ctx, gTask)
+=======
+func (h *flowHandle) ProcessErrFlow(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.Task, receiveErr []error, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
+	logger := logutil.BgLogger().With(
+		zap.String("type", gTask.Type),
+		zap.Int64("task-id", gTask.ID),
+		zap.String("step", stepStr(gTask.Step)),
+	)
+	logger.Info("process error flow", zap.Errors("errors", receiveErr))
+	taskMeta := &TaskMeta{}
+	err := json.Unmarshal(gTask.Meta, taskMeta)
+	if err != nil {
+		errChan <- err
+		return
+	}
+	errStrs := make([]string, 0, len(receiveErr))
+	for _, receiveErr := range receiveErr {
+		errStrs = append(errStrs, receiveErr.Error())
+	}
+	if err = h.failJob(ctx, handle, gTask, taskMeta, logger, strings.Join(errStrs, "; ")); err != nil {
+		errChan <- err
+		return
+	}
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 
 	gTask.Error = receiveErr[0]
 
-	errStr := string(receiveErr[0])
-	// do nothing if the error is resumable
+	errStr := receiveErr[0].Error()
+	// do nothing if the error is resumable.
 	if isResumableErr(errStr) {
-		return nil, nil
+		metasChan <- nil
+		return
 	}
 
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 	// Actually, `processErrFlow` will only be called when there is a failure in the import step.
 	if gTask.Step != Import {
 		return nil, nil
@@ -238,8 +320,16 @@ func (h *flowHandle) ProcessErrFlow(ctx context.Context, handle dispatcher.TaskH
 	if err != nil {
 		// TODO: add error code according to spec.
 		gTask.Error = []byte(errStr + ", " + err.Error())
+=======
+	if gTask.Step == StepPostProcess {
+		err = rollback(ctx, handle, gTask, logger)
+		if err != nil {
+			// TODO: add error code according to spec.
+			gTask.Error = errors.New(errStr + ", " + err.Error())
+		}
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 	}
-	return nil, err
+	errChan <- err
 }
 
 func (*flowHandle) GetEligibleInstances(ctx context.Context, gTask *proto.Task) ([]*infosync.ServerInfo, error) {
@@ -283,6 +373,7 @@ func preProcess(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.
 	return updateMeta(gTask, taskMeta)
 }
 
+<<<<<<< Updated upstream:disttask/loaddata/dispatcher.go
 // postProcess does the post processing for the task.
 func postProcess(ctx context.Context, handle dispatcher.TaskHandle, gTask *proto.Task, taskMeta *TaskMeta, logger *zap.Logger) (err error) {
 	// create table indexes even if the post process is failed.
@@ -333,6 +424,9 @@ func verifyChecksum(ctx context.Context, controller *importer.LoadDataController
 	return controller.VerifyChecksum(ctx, localChecksum)
 }
 
+=======
+// nolint:deadcode
+>>>>>>> Stashed changes:disttask/importinto/dispatcher.go
 func dropTableIndexes(ctx context.Context, handle dispatcher.TaskHandle, taskMeta *TaskMeta, logger *zap.Logger) error {
 	tblInfo := taskMeta.Plan.TableInfo
 	tableName := common.UniqueTable(taskMeta.Plan.DBName, tblInfo.Name.L)

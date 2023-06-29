@@ -27,8 +27,18 @@ import (
 
 // TaskStep of LoadData.
 const (
+<<<<<<< Updated upstream:disttask/loaddata/proto.go
 	// Import we sort source data and ingest it into TiKV in this step.
 	Import int64 = 1
+=======
+	// StepImport we sort source data and ingest it into TiKV in this step.
+	StepImport int64 = 1
+	// StepPostProcess we verify checksum and add index in this step.
+	// TODO: Might split into StepValidate and StepAddIndex later.
+	StepPostProcess int64 = 2
+	// Step Finish
+	StepFinish int64 = 3
+>>>>>>> Stashed changes:disttask/importinto/proto.go
 )
 
 // TaskMeta is the task of LoadData.

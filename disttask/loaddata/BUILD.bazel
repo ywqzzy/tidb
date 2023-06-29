@@ -15,6 +15,7 @@ go_library(
     deps = [
         "//br/pkg/lightning/backend",
         "//br/pkg/lightning/backend/kv",
+        "//br/pkg/lightning/backend/local",
         "//br/pkg/lightning/checkpoints",
         "//br/pkg/lightning/common",
         "//br/pkg/lightning/config",
@@ -30,16 +31,24 @@ go_library(
         "//errno",
         "//executor/asyncloaddata",
         "//executor/importer",
+<<<<<<< Updated upstream:disttask/loaddata/BUILD.bazel
+=======
+        "//kv",
+        "//parser/ast",
+>>>>>>> Stashed changes:disttask/importinto/BUILD.bazel
         "//parser/mysql",
         "//sessionctx",
+        "//sessionctx/variable",
         "//table/tables",
         "//util/etcd",
         "//util/logutil",
+        "//util/mathutil",
         "//util/sqlexec",
         "@com_github_go_sql_driver_mysql//:mysql",
         "@com_github_google_uuid//:uuid",
         "@com_github_pingcap_errors//:errors",
         "@com_github_pingcap_failpoint//:failpoint",
+        "@com_github_tikv_client_go_v2//util",
         "@org_uber_go_atomic//:atomic",
         "@org_uber_go_multierr//:multierr",
         "@org_uber_go_zap//:zap",
@@ -49,14 +58,33 @@ go_library(
 go_test(
     name = "loaddata_test",
     timeout = "short",
+<<<<<<< Updated upstream:disttask/loaddata/BUILD.bazel
     srcs = ["dispatcher_test.go"],
     embed = [":loaddata"],
+=======
+    srcs = [
+        "dispatcher_test.go",
+        "subtask_executor_test.go",
+    ],
+    embed = [":importinto"],
+>>>>>>> Stashed changes:disttask/importinto/BUILD.bazel
     flaky = True,
     deps = [
+        "//br/pkg/lightning/verification",
         "//disttask/framework/proto",
+        "//disttask/framework/storage",
         "//domain/infosync",
+<<<<<<< Updated upstream:disttask/loaddata/BUILD.bazel
+=======
+        "//executor/importer",
+        "//parser/model",
+        "//testkit",
+        "//util/logutil",
+        "@com_github_ngaut_pools//:pools",
+>>>>>>> Stashed changes:disttask/importinto/BUILD.bazel
         "@com_github_pingcap_failpoint//:failpoint",
         "@com_github_stretchr_testify//require",
         "@com_github_stretchr_testify//suite",
+        "@com_github_tikv_client_go_v2//util",
     ],
 )

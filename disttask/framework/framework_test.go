@@ -29,26 +29,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type testFlowHandle struct{}
+type testFlowHandle struct {
+}
 
 var _ dispatcher.TaskFlowHandle = (*testFlowHandle)(nil)
 
 func (*testFlowHandle) OnTicker(_ context.Context, _ *proto.Task) {
 }
 
-func (*testFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskHandle, gTask *proto.Task) (metas [][]byte, err error) {
-	if gTask.State == proto.TaskStatePending {
-		gTask.Step = proto.StepOne
-		return [][]byte{
+func (f *testFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskHandle, gTask *proto.Task, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
+	switch gTask.Step {
+	case proto.StepOne:
+		metasChan <- [][]byte{
 			[]byte("task1"),
 			[]byte("task2"),
+<<<<<<< Updated upstream
 		}, nil
+=======
+			[]byte("task3"),
+		}
+		doneChan <- true
+	default:
+		doneChan <- true
+>>>>>>> Stashed changes
 	}
-	return nil, nil
 }
 
-func (*testFlowHandle) ProcessErrFlow(_ context.Context, _ dispatcher.TaskHandle, _ *proto.Task, _ [][]byte) (meta []byte, err error) {
-	return nil, nil
+func (*testFlowHandle) ProcessErrFlow(ctx context.Context, h dispatcher.TaskHandle, gTask *proto.Task, receiveErr []error, metasChan chan [][]byte, errChan chan error, doneChan chan bool) {
+	doneChan <- true
 }
 
 func (*testFlowHandle) GetEligibleInstances(ctx context.Context, _ *proto.Task) ([]*infosync.ServerInfo, error) {
@@ -107,10 +115,17 @@ func TestFrameworkStartUp(t *testing.T) {
 		return &testSubtaskExecutor{v: &v}, nil
 	})
 
+<<<<<<< Updated upstream
 	_ = testkit.CreateMockStore(t)
 	mgr, err := storage.GetTaskManager()
 	require.NoError(t, err)
 	taskID, err := mgr.AddNewGlobalTask("key1", proto.TaskTypeExample, 8, nil)
+=======
+func DispatchTask(taskKey string, taskType string, t *testing.T) *proto.Task {
+	mgr, err := storage.GetTaskManager()
+	require.NoError(t, err)
+	taskID, err := mgr.AddNewGlobalTask(taskKey, taskType, 8, nil)
+>>>>>>> Stashed changes
 	require.NoError(t, err)
 	start := time.Now()
 
@@ -128,7 +143,187 @@ func TestFrameworkStartUp(t *testing.T) {
 			break
 		}
 	}
+<<<<<<< Updated upstream
 
 	require.Equal(t, proto.TaskStateSucceed, task.State)
 	require.Equal(t, int64(6), v.Load())
+=======
+	return task
+}
+
+func DispatchTaskAndCheckSuccess(taskKey string, taskType string, t *testing.T, v *atomic.Int64) {
+	task := DispatchTask(taskKey, taskType, t)
+	require.Equal(t, proto.TaskStateSucceed, task.State)
+	require.Equal(t, int64(9), v.Load())
+	v.Store(0)
+}
+
+func DispatchAndCancelTask(taskKey string, taskType string, t *testing.T, v *atomic.Int64) {
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/MockExecutorRunCancel", "1*return(1)"))
+	defer func() {
+		require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/MockExecutorRunCancel"))
+	}()
+	task := DispatchTask(taskKey, taskType, t)
+	require.Equal(t, proto.TaskStateReverted, task.State)
+	v.Store(0)
+}
+
+func DispatchTaskAndCheckFail(taskKey string, taskType string, t *testing.T, v *atomic.Int64) {
+	task := DispatchTask(taskKey, taskType, t)
+	require.Equal(t, proto.TaskStateReverted, task.State)
+	v.Store(0)
+}
+
+func TestFrameworkBasic(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 2)
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	DispatchTaskAndCheckSuccess("key2", proto.TaskTypeExample, t, &v)
+
+	distContext.SetOwner(0)
+	time.Sleep(2 * time.Second) // make sure owner changed
+	DispatchTaskAndCheckSuccess("key3", proto.TaskTypeExample, t, &v)
+
+	DispatchTaskAndCheckSuccess("key4", proto.TaskTypeExample, t, &v)
+
+	distContext.Close()
+}
+
+func TestFramework3Server(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 3)
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	DispatchTaskAndCheckSuccess("key2", proto.TaskTypeExample, t, &v)
+
+	distContext.SetOwner(0)
+	time.Sleep(2 * time.Second) // make sure owner changed
+	DispatchTaskAndCheckSuccess("key3", proto.TaskTypeExample, t, &v)
+
+	DispatchTaskAndCheckSuccess("key4", proto.TaskTypeExample, t, &v)
+
+	distContext.Close()
+}
+
+func TestFrameworkAddDomain(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 2)
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	distContext.AddDomain()
+	DispatchTaskAndCheckSuccess("key2", proto.TaskTypeExample, t, &v)
+
+	distContext.SetOwner(1)
+	time.Sleep(2 * time.Second) // make sure owner changed
+	DispatchTaskAndCheckSuccess("key3", proto.TaskTypeExample, t, &v)
+
+	distContext.Close()
+	distContext.AddDomain()
+	DispatchTaskAndCheckSuccess("key4", proto.TaskTypeExample, t, &v)
+
+}
+
+func TestFrameworkDeleteDomain(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 2)
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	distContext.DeleteDomain(1)
+	time.Sleep(2 * time.Second) // make sure the owner changed
+	DispatchTaskAndCheckSuccess("key2", proto.TaskTypeExample, t, &v)
+
+	distContext.Close()
+}
+
+func TestFrameworkWithQuery(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 2)
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	tk := testkit.NewTestKit(t, distContext.Store)
+
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists t")
+	tk.MustExec("create table t(a int not null, b int not null)")
+	rs, err := tk.Exec("select ifnull(a,b) from t")
+	require.NoError(t, err)
+	fields := rs.Fields()
+	require.Greater(t, len(fields), 0)
+	require.Equal(t, "ifnull(a,b)", rs.Fields()[0].Column.Name.L)
+	require.NoError(t, rs.Close())
+	distContext.Close()
+}
+
+func TestFrameworkCancelGTask(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 2)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/cancelTaskBeforeProbe", "1*return(true)"))
+	DispatchAndCancelTask("key1", proto.TaskTypeExample, t, &v)
+
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/cancelTaskBeforeProbe"))
+	distContext.Close()
+}
+
+// bug here
+func TestFrameworkSubTaskFailed(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 1)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/MockExecutorRunErr", "1*return(true)"))
+	DispatchTaskAndCheckFail("key1", proto.TaskTypeExample, t, &v)
+
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/MockExecutorRunErr"))
+	distContext.Close()
+}
+
+func TestFrameworkBatchAddSubTasks(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 3)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/insertSubtasksFail", "return(true)"))
+	DispatchTaskAndCheckSuccess("key1", proto.TaskTypeExample, t, &v)
+
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/insertSubtasksFail"))
+	distContext.Close()
+}
+
+func TestFrameworkBatchAddSubTasksFailed(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 3)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/processNormalFlowErrRetryable", "1*return(true)"))
+	DispatchTaskAndCheckSuccess("😊", proto.TaskTypeExample, t, &v)
+
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/processNormalFlowErrRetryable"))
+
+	distContext.Close()
+>>>>>>> Stashed changes
 }

@@ -44,11 +44,20 @@ const (
 	TaskStateReverted      = "reverted"
 )
 
+// task substate
+// when global task start to dispatch substasks to every nodes,
+// the substate will transfer to dispatching.
+const (
+	TaskSubStateDispatching = "dispatching"
+	TaskSubStateNormal      = "normal"
+)
+
 // TaskStep is the step of task.
 const (
-	StepInit int64 = -1
-	StepOne  int64 = 1
-	StepTwo  int64 = 2
+	StepInit     int64 = 0
+	StepOne      int64 = 1
+	StepTwo      int64 = 2
+	StepFinished int64 = 3
 )
 
 // Task represents the task of distribute framework.
@@ -57,6 +66,7 @@ type Task struct {
 	Key   string
 	Type  string
 	State string
+	Flag  string // used to indicate whether all subtasks in one step are dispatched
 	Step  int64
 	// DispatcherID is not used now.
 	DispatcherID    string
@@ -64,7 +74,7 @@ type Task struct {
 	StartTime       time.Time
 	StateUpdateTime time.Time
 	Meta            []byte
-	Error           []byte
+	Error           error
 }
 
 // IsFinished checks if the task is finished.
@@ -109,8 +119,17 @@ type MinimalTask interface {
 const (
 	// TaskTypeExample is TaskType of Example.
 	TaskTypeExample = "Example"
+<<<<<<< Updated upstream
 	// LoadData is TaskType of LoadData.
 	LoadData = "LoadData"
+=======
+	// TaskTypeRollbackExample is TaskType of Rollback Example
+	TaskTypeRollbackExample = "RollbackExample"
+	// TaskTypeAsyncExample is TaskType of Async generate subtasks Example.
+	TaskTypeAsyncExample = "AsyncExample"
+	// ImportInto is TaskType of ImportInto.
+	ImportInto = "ImportInto"
+>>>>>>> Stashed changes
 )
 
 // Type2Int converts task type to int.
@@ -118,8 +137,16 @@ func Type2Int(t string) int {
 	switch t {
 	case TaskTypeExample:
 		return 1
+<<<<<<< Updated upstream
 	case LoadData:
+=======
+	case TaskTypeRollbackExample:
+>>>>>>> Stashed changes
 		return 2
+	case TaskTypeAsyncExample:
+		return 3
+	case ImportInto:
+		return 4
 	default:
 		return 0
 	}
@@ -131,7 +158,15 @@ func Int2Type(i int) string {
 	case 1:
 		return TaskTypeExample
 	case 2:
+<<<<<<< Updated upstream
 		return LoadData
+=======
+		return TaskTypeRollbackExample
+	case 3:
+		return TaskTypeAsyncExample
+	case 4:
+		return ImportInto
+>>>>>>> Stashed changes
 	default:
 		return ""
 	}
