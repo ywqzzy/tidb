@@ -15,6 +15,7 @@
 package sharedisk
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -127,8 +128,14 @@ func TestWriter(t *testing.T) {
 	mIter, err := NewMergeIter(ctx, nil, nil, dataFileName, storage)
 	require.NoError(t, err)
 	mCnt := 0
+	var prevKey []byte
 	for mIter.Next() {
 		mCnt++
+		if len(prevKey) > 0 {
+			currKey := mIter.Key()
+			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
+			prevKey = currKey
+		}
 	}
 	require.Equal(t, 20000, mCnt)
 }

@@ -149,3 +149,106 @@ func (i *MergeIter) Close() []byte {
 func (i *MergeIter) OpType() sst.Pair_OP {
 	return sst.Pair_Put
 }
+
+type prop struct {
+	p          RangeProperty
+	fileOffset int
+}
+
+type propHeap []*prop
+
+func (h propHeap) Len() int {
+	return len(h)
+}
+
+func (h propHeap) Less(i, j int) bool {
+	return bytes.Compare(h[i].p.Key, h[j].p.Key) < 0
+}
+
+func (h propHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *propHeap) Push(x interface{}) {
+	*h = append(*h, x.(*prop))
+}
+
+func (h *propHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+type MergePropIter struct {
+	startKey       []byte
+	endKey         []byte
+	statFilePaths  []string
+	statFileReader []*statFileReader
+	exStorage      storage.ExternalStorage
+	propHeap       propHeap
+	currProp       *prop
+
+	firstKey []byte
+
+	err error
+}
+
+func NewMergePropIter(ctx context.Context, startKey, endKey []byte, paths []string, exStorage storage.ExternalStorage) (*MergePropIter, error) {
+	it := &MergePropIter{
+		startKey:      startKey,
+		endKey:        endKey,
+		statFilePaths: paths,
+	}
+	it.propHeap = make([]*prop, 0, len(paths))
+	for i, path := range paths {
+		rd := statFileReader{ctx: ctx, name: path, exStorage: exStorage}
+		rd.readBuffer = make([]byte, 4096)
+		it.statFileReader = append(it.statFileReader, &rd)
+		p, err := rd.GetNextProp()
+		if err != nil {
+			return nil, err
+		}
+		if p == nil {
+			continue
+		}
+		pair := prop{p: *p, fileOffset: i}
+		it.propHeap.Push(&pair)
+	}
+	heap.Init(&it.propHeap)
+	return it, nil
+}
+
+func (i *MergePropIter) Error() error {
+	return i.err
+}
+
+func (i *MergePropIter) Valid() bool {
+	return i.currProp != nil
+}
+
+func (i *MergePropIter) Next() bool {
+	if i.propHeap.Len() == 0 {
+		return false
+	}
+	i.currProp = heap.Pop(&i.propHeap).(*prop)
+	p, err := i.statFileReader[i.currProp.fileOffset].GetNextProp()
+	if err != nil {
+		i.err = err
+		return false
+	}
+	if p != nil {
+		heap.Push(&i.propHeap, &prop{*p, i.currProp.fileOffset})
+	}
+
+	return true
+}
+
+func (i *MergePropIter) prop() *RangeProperty {
+	return &i.currProp.p
+}
+
+func (i *MergePropIter) Close() error {
+	return nil
+}
