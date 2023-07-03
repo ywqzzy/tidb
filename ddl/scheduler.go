@@ -24,6 +24,7 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
 	"github.com/pingcap/tidb/ddl/ingest"
 	ddlutil "github.com/pingcap/tidb/ddl/util"
@@ -42,19 +43,20 @@ import (
 var MockDMLExecutionAddIndexSubTaskFinish func()
 
 type backfillSchedulerHandle struct {
-	d             *ddl
-	db            *model.DBInfo
-	index         *model.IndexInfo
-	job           *model.Job
-	bc            ingest.BackendCtx
-	ptbl          table.PhysicalTable
-	jc            *JobContext
-	eleTypeKey    []byte
-	totalRowCnt   int64
-	isPartition   bool
-	stepForImport bool
-	done          chan struct{}
-	ctx           context.Context
+	d                    *ddl
+	db                   *model.DBInfo
+	index                *model.IndexInfo
+	job                  *model.Job
+	bc                   ingest.BackendCtx
+	ptbl                 table.PhysicalTable
+	jc                   *JobContext
+	eleTypeKey           []byte
+	totalRowCnt          int64
+	isPartition          bool
+	stepForImport        bool
+	stepForOrderedImport bool
+	done                 chan struct{}
+	ctx                  context.Context
 }
 
 // BackfillGlobalMeta is the global task meta for backfilling index.
@@ -66,9 +68,11 @@ type BackfillGlobalMeta struct {
 
 // BackfillSubTaskMeta is the sub-task meta for backfilling index.
 type BackfillSubTaskMeta struct {
-	PhysicalTableID int64  `json:"physical_table_id"`
-	StartKey        []byte `json:"start_key"`
-	EndKey          []byte `json:"end_key"`
+	PhysicalTableID int64    `json:"physical_table_id"`
+	StartKey        []byte   `json:"start_key"`
+	EndKey          []byte   `json:"end_key"`
+	DataFiles       []string `json:"data_files"`
+	StatsFiles      []string `json:"stats_files"`
 }
 
 // NewBackfillSchedulerHandle creates a new backfill scheduler.
@@ -105,6 +109,11 @@ func NewBackfillSchedulerHandle(taskMeta []byte, d *ddl, stepForImport bool) (sc
 
 	if stepForImport {
 		bh.stepForImport = true
+		if bcCtx, ok := ingest.LitBackCtxMgr.Load(jobMeta.ID); ok {
+			if _, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+				bh.stepForOrderedImport = true
+			}
+		}
 		return bh, nil
 	}
 
@@ -155,6 +164,9 @@ func (b *backfillSchedulerHandle) InitSubtaskExecEnv(ctx context.Context) error 
 	}
 	b.bc = bc
 	if b.stepForImport {
+		if b.stepForOrderedImport {
+			return nil
+		}
 		return b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 	}
 	b.ctx = ctx
@@ -198,6 +210,9 @@ func (b *backfillSchedulerHandle) SplitSubtask(ctx context.Context, subtask []by
 	logutil.BgLogger().Info("[ddl] lightning split subtask")
 
 	if b.stepForImport {
+		if b.stepForOrderedImport {
+			return nil, b.orderedImport(ctx, subtask)
+		}
 		return nil, nil
 	}
 
@@ -296,6 +311,24 @@ func (b *backfillSchedulerHandle) SplitSubtask(ctx context.Context, subtask []by
 		return nil, b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 	}
 	return nil, b.doFlushAndHandleError(ingest.FlushModeForceLocalAndCheckDiskQuota)
+}
+
+func (b *backfillSchedulerHandle) orderedImport(ctx context.Context, subtask []byte) error {
+	subTaskMeta := &BackfillSubTaskMeta{}
+	err := json.Unmarshal(subtask, subTaskMeta)
+	if err != nil {
+		logutil.BgLogger().Error("[ddl] unmarshal error", zap.Error(err))
+		return err
+	}
+	if bcCtx, ok := ingest.LitBackCtxMgr.Load(b.job.ID); ok {
+		if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+			err := bc.SetRange(ctx, subTaskMeta.StartKey, subTaskMeta.EndKey, subTaskMeta.DataFiles, subTaskMeta.StatsFiles)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 }
 
 // OnSubtaskFinished implements the Scheduler interface.

@@ -5,12 +5,13 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
-	"io"
-	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/pingcap/errors"
@@ -200,7 +201,7 @@ func New(ctx context.Context, backend *backuppb.StorageBackend, opts *ExternalSt
 	}
 }
 
-func GetFileMaxOffset(ctx context.Context, storage ExternalStorage, name string) (int, error) {
+func GetFileMaxOffset(ctx context.Context, storage ExternalStorage, name string) (uint64, error) {
 	st, ok := storage.(*S3Storage)
 	if !ok {
 		return 0, errors.Annotate(berrors.ErrUnsupportedOperation, "only s3 storage can read partial file directly")
@@ -213,10 +214,10 @@ func GetFileMaxOffset(ctx context.Context, storage ExternalStorage, name string)
 	if err != nil {
 		return 0, errors.Trace(err)
 	}
-	return int(*result.ContentLength), nil
+	return uint64(*result.ContentLength), nil
 }
 
-func ReadPartialFileDirectly(ctx context.Context, storage ExternalStorage, name string, start, end int, readBuffer []byte) (int, error) {
+func ReadPartialFileDirectly(ctx context.Context, storage ExternalStorage, name string, start, end uint64, readBuffer []byte) (uint64, error) {
 	st, ok := storage.(*S3Storage)
 	if !ok {
 		return 0, errors.Annotate(berrors.ErrUnsupportedOperation, "only s3 storage can read partial file directly")
@@ -242,5 +243,5 @@ func ReadPartialFileDirectly(ctx context.Context, storage ExternalStorage, name 
 			break
 		}
 	}
-	return readN, err
+	return uint64(readN), err
 }

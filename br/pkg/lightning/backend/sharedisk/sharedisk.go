@@ -59,7 +59,17 @@ type RangePropertiesCollector struct {
 	propKeysIdxDistance uint64
 }
 
-func (rc RangePropertiesCollector) Encode() []byte {
+func (rc *RangePropertiesCollector) reset() {
+	rc.props = rc.props[:0]
+	rc.currProp = &RangeProperty{
+		rangeOffsets: rangeOffsets{},
+	}
+	rc.lastOffsets = rangeOffsets{}
+	rc.lastKey = nil
+	rc.currentOffsets = rangeOffsets{}
+}
+
+func (rc *RangePropertiesCollector) Encode() []byte {
 	b := make([]byte, 0, 1024)
 	idx := 0
 	for _, p := range rc.props {
@@ -104,6 +114,7 @@ func NewEngine(sizeDist, keyDist uint64) *Engine {
 		rc: &RangePropertiesCollector{
 			// TODO(tangenta): decide the preserved size of props.
 			props:               nil,
+			currProp:            &RangeProperty{},
 			propSizeIdxDistance: sizeDist,
 			propKeysIdxDistance: keyDist,
 		},
@@ -170,11 +181,11 @@ type DataFileReader struct {
 	name      string
 	exStorage storage.ExternalStorage
 
-	fileMaxOffset    int
+	fileMaxOffset    uint64
 	readBuffer       []byte
-	bufferMaxOffset  int
-	currBufferOffset int
-	currFileOffset   int
+	bufferMaxOffset  uint64
+	currBufferOffset uint64
+	currFileOffset   uint64
 	init             bool
 }
 
@@ -182,7 +193,7 @@ func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 	logutil.BgLogger().Info("getMoreDataFromStorage")
 
 	fileStartOffset := dr.currFileOffset + dr.currBufferOffset
-	fileEndOffset := dr.currFileOffset + dr.currBufferOffset + len(dr.readBuffer)
+	fileEndOffset := dr.currFileOffset + dr.currBufferOffset + uint64(len(dr.readBuffer))
 	if fileEndOffset > dr.fileMaxOffset {
 		fileEndOffset = dr.fileMaxOffset
 	}
@@ -216,7 +227,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 
 		dr.init = true
 	}
-	if dr.bufferMaxOffset-dr.currBufferOffset < 8 {
+	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
 		get, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
@@ -228,16 +239,16 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 	keyLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
 	dr.currBufferOffset += 8
 
-	if dr.bufferMaxOffset-dr.currBufferOffset < int(keyLen) {
+	if dr.bufferMaxOffset < dr.currBufferOffset+keyLen {
 		_, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	key := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+int(keyLen)]
-	dr.currBufferOffset += int(keyLen)
+	key := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+uint64(keyLen)]
+	dr.currBufferOffset += keyLen
 
-	if dr.bufferMaxOffset-dr.currBufferOffset < 8 {
+	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
 		_, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
@@ -246,14 +257,14 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 	valLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
 	dr.currBufferOffset += 8
 
-	if dr.bufferMaxOffset-dr.currBufferOffset < int(valLen) {
+	if dr.bufferMaxOffset < dr.currBufferOffset+valLen {
 		_, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+int(valLen)]
-	dr.currBufferOffset += int(valLen)
+	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+uint64(valLen)]
+	dr.currBufferOffset += uint64(valLen)
 	return key, val, nil
 }
 
@@ -263,11 +274,11 @@ type statFileReader struct {
 	name      string
 	exStorage storage.ExternalStorage
 
-	fileMaxOffset    int
-	bufferMaxOffset  int
+	fileMaxOffset    uint64
+	bufferMaxOffset  uint64
 	readBuffer       []byte
-	currBufferOffset int
-	currFileOffset   int
+	currBufferOffset uint64
+	currFileOffset   uint64
 	init             bool
 }
 
@@ -275,7 +286,7 @@ func (sr *statFileReader) getMoreDataFromStorage() (bool, error) {
 	logutil.BgLogger().Info("getMoreDataFromStorage")
 
 	fileStartOffset := sr.currFileOffset + sr.currBufferOffset
-	fileEndOffset := sr.currFileOffset + sr.currBufferOffset + len(sr.readBuffer)
+	fileEndOffset := sr.currFileOffset + sr.currBufferOffset + uint64(len(sr.readBuffer))
 	if fileEndOffset > sr.fileMaxOffset {
 		fileEndOffset = sr.fileMaxOffset
 	}
@@ -308,7 +319,7 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 		}
 		sr.init = true
 	}
-	if sr.bufferMaxOffset-sr.currBufferOffset < 4 {
+	if sr.bufferMaxOffset < sr.currBufferOffset+4 {
 		get, err := sr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, err
@@ -320,7 +331,7 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 	propLen := binary.BigEndian.Uint32(sr.readBuffer[sr.currBufferOffset:])
 	sr.currBufferOffset += 4
 
-	if sr.bufferMaxOffset-sr.currBufferOffset < int(propLen) {
+	if sr.bufferMaxOffset < sr.currBufferOffset+uint64(propLen) {
 		get, err := sr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, err
@@ -329,8 +340,8 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 			return nil, nil
 		}
 	}
-	propBytes := sr.readBuffer[sr.currBufferOffset : sr.currBufferOffset+int(propLen)]
-	sr.currBufferOffset += int(propLen)
+	propBytes := sr.readBuffer[sr.currBufferOffset : sr.currBufferOffset+uint64(propLen)]
+	sr.currBufferOffset += uint64(propLen)
 	return Decode2RangeProperty(propBytes)
 }
 
@@ -444,7 +455,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
+	w.engine.rc.reset()
 	return nil
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	lightning "github.com/pingcap/tidb/br/pkg/lightning/config"
 	"github.com/pingcap/tidb/br/pkg/lightning/errormanager"
 	"github.com/pingcap/tidb/br/pkg/lightning/log"
@@ -229,6 +230,15 @@ func (bc *litBackendCtx) Flush(indexID int64, mode FlushMode) (flushed, imported
 	//nolint:forcetypeassert
 	localBackend, ok := bc.backend.(*local.Backend)
 	if !ok {
+		if remoteBackend, ok := bc.backend.(*remote.Backend); ok {
+			err = remoteBackend.ImportEngine(bc.ctx, ei.uuid, int64(lightning.SplitRegionSize)*int64(lightning.MaxSplitRegionSizeRatio), int64(lightning.SplitRegionKeys))
+			if err != nil {
+				logutil.BgLogger().Error(LitErrIngestDataErr, zap.Int64("index ID", indexID),
+					zap.String("usage info", bc.diskRoot.UsageInfo()))
+				return true, false, err
+			}
+			return true, true, nil
+		}
 		return false, false, nil
 	}
 	err = localBackend.UnsafeImportAndReset(bc.ctx, ei.uuid, int64(lightning.SplitRegionSize)*int64(lightning.MaxSplitRegionSizeRatio), int64(lightning.SplitRegionKeys))
