@@ -68,7 +68,7 @@ func TestWriter(t *testing.T) {
 		kv.Key = make([]byte, 16)
 		kv.Val = make([]byte, 128)
 		copy(kv.Val, value)
-		key := rand.Intn(1000)
+		key := rand.Intn(10000000)
 		binary.BigEndian.PutUint64(kv.Key, uint64(key))
 		binary.BigEndian.PutUint64(kv.Key[8:], uint64(i))
 		kvs = append(kvs, kv)
@@ -122,10 +122,12 @@ func TestWriter(t *testing.T) {
 	}
 
 	dataFileName := make([]string, 0)
+	fileStartOffsets := make([]uint64, 0)
 	for i := 0; i < writer.currentSeq; i++ {
 		dataFileName = append(dataFileName, "test/"+strconv.Itoa(i))
+		fileStartOffsets = append(fileStartOffsets, 0)
 	}
-	mIter, err := NewMergeIter(ctx, nil, nil, dataFileName, storage)
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage)
 	require.NoError(t, err)
 	mCnt := 0
 	var prevKey []byte

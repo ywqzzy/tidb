@@ -17,6 +17,7 @@ package sharedisk
 import (
 	"context"
 	"encoding/binary"
+
 	"github.com/pingcap/tidb/br/pkg/storage"
 )
 
@@ -66,14 +67,9 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 		if len(s.rc.lastKey) != 0 {
 			s.rc.props = append(s.rc.props, s.rc.currProp)
 		}
-		s.rc.currProp = &RangeProperty{
-			Key:    key,
-			offset: s.offset,
-			rangeOffsets: rangeOffsets{
-				Size: 0,
-				Keys: 0,
-			},
-		}
+		s.rc.currProp.Key = key
+		s.rc.currProp.offset = s.offset
+		s.rc.currProp.rangeOffsets = rangeOffsets{}
 	}
 
 	s.rc.lastKey = key
