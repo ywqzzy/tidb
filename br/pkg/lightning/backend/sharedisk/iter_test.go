@@ -17,7 +17,6 @@ package sharedisk
 import (
 	"bytes"
 	"container/heap"
-	"fmt"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -27,20 +26,22 @@ import (
 )
 
 func TestKvPairHeap(t *testing.T) {
-	dataSizePerSortedBatch := 5000000
-	batchCnt := 2
+	dataSizePerSortedBatch := 100
+	batchCnt := 1000
 	dataBatch := make([]kvPairHeap, 0, batchCnt)
 	dataBatchOffset := make([]int, 0, batchCnt)
+	dataBatchTime := make([][]time.Time, 0, batchCnt)
 	for i := 0; i < batchCnt; i++ {
 		h := make([]*kvPair, 0, dataSizePerSortedBatch)
 		for j := 0; j < dataSizePerSortedBatch; j++ {
-			h = append(h, &kvPair{key: []byte(fmt.Sprintf("%d", rand.Intn(10000000))), value: []byte(rand.String(100)), fileOffset: i})
+			h = append(h, &kvPair{key: []byte(rand.String(10000)), value: []byte(rand.String(100)), fileOffset: i})
 		}
 		sort.Slice(h, func(i, j int) bool {
 			return bytes.Compare(h[i].key, h[j].key) < 0
 		})
 		dataBatch = append(dataBatch, h)
 		dataBatchOffset = append(dataBatchOffset, 0)
+		dataBatchTime = append(dataBatchTime, make([]time.Time, 0))
 	}
 
 	logutil.BgLogger().Info("prepare key done", zap.Any("dataSizePerSortedBatch", dataSizePerSortedBatch), zap.Any("batchCnt", batchCnt))
@@ -53,6 +54,9 @@ func TestKvPairHeap(t *testing.T) {
 		if dataBatchOffset[i] == dataSizePerSortedBatch {
 			return nil, false
 		}
+		if dataBatchOffset[i]%10 == 0 {
+			dataBatchTime[i] = append(dataBatchTime[i], time.Now())
+		}
 		kv = (*pairHeap)[dataBatchOffset[i]]
 		dataBatchOffset[i]++
 		return kv, true
@@ -61,6 +65,7 @@ func TestKvPairHeap(t *testing.T) {
 	for i := 0; i < batchCnt; i++ {
 		kv, _ := getNextKV(&dataBatch[i], i)
 		globalHeap = append(globalHeap, kv)
+		dataBatchTime[i] = append(dataBatchTime[i], time.Now())
 	}
 	heap.Init(&globalHeap)
 
@@ -78,6 +83,15 @@ func TestKvPairHeap(t *testing.T) {
 		if ok {
 			heap.Push(&globalHeap, newKV)
 		}
+	}
+	for i := 0; i < batchCnt; i++ {
+		var d time.Duration
+		for j := range dataBatchTime[i] {
+			if j != 0 {
+				d += dataBatchTime[i][j].Sub(dataBatchTime[i][j-1])
+			}
+		}
+		logutil.BgLogger().Info("get time", zap.Any("total duration", d.String()))
 	}
 	logutil.BgLogger().Info("time", zap.Any("elasp", time.Since(ts)), zap.Any("time", times))
 }
