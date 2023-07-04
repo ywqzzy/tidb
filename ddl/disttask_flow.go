@@ -17,10 +17,13 @@ package ddl
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
+	"github.com/pingcap/tidb/ddl/ingest"
 	"github.com/pingcap/tidb/disttask/framework/dispatcher"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/domain/infosync"
@@ -29,7 +32,10 @@ import (
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/store/helper"
 	"github.com/pingcap/tidb/table"
+	"github.com/pingcap/tidb/tablecodec"
+	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
+	"go.uber.org/zap"
 )
 
 type litBackfillFlowHandle struct {
@@ -49,7 +55,7 @@ func (*litBackfillFlowHandle) OnTicker(_ context.Context, _ *proto.Task) {
 }
 
 // ProcessNormalFlow processes the normal flow.
-func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskHandle, gTask *proto.Task) (metas [][]byte, err error) {
+func (h *litBackfillFlowHandle) ProcessNormalFlow(ctx context.Context, taskHandle dispatcher.TaskHandle, gTask *proto.Task) (metas [][]byte, err error) {
 	var globalTaskMeta BackfillGlobalMeta
 	if err = json.Unmarshal(gTask.Meta, &globalTaskMeta); err != nil {
 		return nil, err
@@ -74,6 +80,12 @@ func (h *litBackfillFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatche
 	if tblInfo.Partition == nil {
 		switch gTask.Step {
 		case proto.StepOne:
+			if bcCtx, ok := ingest.LitBackCtxMgr.Load(job.ID); ok {
+				if bc := bcCtx.GetBackend().(*remote.Backend); bc != nil {
+					gTask.Step = proto.StepTwo
+					return h.splitSubtaskRanges(ctx, taskHandle, gTask, bc, tblInfo.ID)
+				}
+			}
 			serverNodes, err := dispatcher.GenerateSchedulerNodes(d.ctx)
 			if err != nil {
 				return nil, err
@@ -186,4 +198,53 @@ func (*litBackfillFlowHandle) GetEligibleInstances(ctx context.Context, _ *proto
 // IsRetryableErr implements TaskFlowHandle.IsRetryableErr interface.
 func (*litBackfillFlowHandle) IsRetryableErr(error) bool {
 	return true
+}
+
+func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHandle dispatcher.TaskHandle,
+	gTask *proto.Task, bc *remote.Backend, tableID int64) ([][]byte, error) {
+	instanceIDs, err := taskHandle.GetAllSchedulerIDs(ctx, h, gTask)
+	if err != nil {
+		return nil, err
+	}
+	splitter, err := bc.GetRangeSplitter(ctx, len(instanceIDs)+5)
+	if err != nil {
+		return nil, err
+	}
+	if splitter == nil {
+		return nil, nil
+	}
+	metaArr := make([][]byte, 0, 16)
+	var startKey, endKey []byte
+	var exit bool
+	for {
+		splitKey, dataFiles, statsFiles, err := splitter.SplitOne()
+		if err != nil {
+			return nil, err
+		}
+		endKey = splitKey.Clone()
+		logutil.BgLogger().Info("split subtask range",
+			zap.String("startKey", hex.EncodeToString(startKey)), zap.String("endKey", hex.EncodeToString(endKey)))
+		if len(endKey) == 0 {
+			exit = true
+			endKey = tablecodec.EncodeTablePrefix(tableID).PrefixNext()
+		}
+		if kv.Key(startKey).Cmp(endKey) >= 0 {
+			return nil, errors.Errorf("invalid range, startKey: %s, endKey: %s", hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+		}
+		m := &BackfillSubTaskMeta{
+			StartKey:   startKey,
+			EndKey:     endKey,
+			DataFiles:  dataFiles,
+			StatsFiles: statsFiles,
+		}
+		metaBytes, err := json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+		metaArr = append(metaArr, metaBytes)
+		if exit {
+			return metaArr, nil
+		}
+		startKey = endKey
+	}
 }

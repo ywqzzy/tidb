@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"sync"
 
+	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/table"
@@ -146,6 +147,11 @@ func (m *MockBackendCtx) AttachCheckpointManager(mgr *CheckpointManager) {
 // GetCheckpointManager returns the checkpoint manager attached to the backend context.
 func (m *MockBackendCtx) GetCheckpointManager() *CheckpointManager {
 	return m.checkpointMgr
+}
+
+// GetBackend implements BackendCtx.GetBackend interface.
+func (m *MockBackendCtx) GetBackend() backend.Backend {
+	return nil
 }
 
 // MockEngineInfo is a mock engine info.
