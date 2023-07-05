@@ -40,6 +40,7 @@ import (
 
 var ReadByteForTest atomic.Uint64
 var ReadTimeForTest atomic.Uint64
+var ReadIOCnt atomic.Uint64
 
 type rangeOffsets struct {
 	Size uint64
@@ -211,6 +212,7 @@ func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 	elasp := time.Since(startTime).Microseconds()
 	ReadByteForTest.Add(maxOffset)
 	ReadTimeForTest.Add(uint64(elasp))
+	ReadIOCnt.Add(1)
 	//logutil.BgLogger().Info("read data", zap.Any("name", dr.name), zap.Any("bytes cnt", maxOffset), zap.Any("elasp", elasp))
 	if err != nil {
 		return false, err
