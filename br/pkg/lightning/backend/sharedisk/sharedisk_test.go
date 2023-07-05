@@ -111,7 +111,7 @@ func TestWriter(t *testing.T) {
 			break
 		}
 		j++
-		logutil.BgLogger().Info("print prop", zap.Any("offset", prop.offset))
+		//logutil.BgLogger().Info("print prop", zap.Any("offset", prop.offset))
 	}
 
 	dataFileName := make([]string, 0)

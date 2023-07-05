@@ -251,8 +251,7 @@ func SeekPropsOffsets(ctx context.Context, start kv.Key, paths []string, exStora
 		p := iter.Prop()
 		offsets[iter.currProp.fileOffset] = iter.currProp.p.offset
 		propKey := kv.Key(p.Key)
-		if propKey.Cmp(start) >= 0 {
-			// Return current file offsets.
+		if propKey.Cmp(start) > 0 {
 			offsets[lastFileIdx] = lastOffset
 			return offsets, nil
 		}

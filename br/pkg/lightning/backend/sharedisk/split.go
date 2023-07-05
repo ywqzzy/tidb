@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/kv"
 )
 
@@ -28,6 +29,7 @@ type RangeSplitter struct {
 	propIter  *MergePropIter
 	dataFiles []string
 	exhausted bool
+	curWays   map[int]struct{}
 }
 
 func NewRangeSplitter(maxSize, maxKeys, maxWays uint64, propIter *MergePropIter, dataFiles []string) *RangeSplitter {
@@ -37,6 +39,7 @@ func NewRangeSplitter(maxSize, maxKeys, maxWays uint64, propIter *MergePropIter,
 		maxWays:   maxWays,
 		propIter:  propIter,
 		dataFiles: dataFiles,
+		curWays:   make(map[int]struct{}),
 	}
 }
 
@@ -57,62 +60,73 @@ func (r *RangeSplitter) SplitOne(ctx context.Context) (kv.Key, []string, []strin
 		return nil, nil, nil, nil
 	}
 	var curSize, curKeys uint64
-	curWays := make(map[int]struct{})
-	dataFiles := make([]string, 0, 16)
-	statsFiles := make([]string, 0, 16)
-	//var curKey kv.Key
-	//var curFileIdx int
 	var lastFileIdx int
 	var lastOffset uint64
+	var lastWays int
+	var exhaustedFileIdx []int
 	for r.propIter.Next() {
 		if err := r.propIter.Error(); err != nil {
 			return nil, nil, nil, err
 		}
-		//if curKey.Cmp(r.propIter.currProp.p.Key) > 0 {
-		//	logutil.BgLogger().Info("unexpected descending key",
-		//		zap.String("prev", hex.EncodeToString(curKey)),
-		//		zap.Int("prevFileIdx", curFileIdx),
-		//		zap.String("curr", hex.EncodeToString(r.propIter.currProp.p.Key)))
-		//}
-		//curKey = kv.Key(r.propIter.currProp.p.Key).Clone()
-		//curFileIdx = r.propIter.currProp.fileIdx
 		prop := r.propIter.currProp.p
 		curSize += prop.rangeOffsets.Size
 		curKeys += prop.rangeOffsets.Keys
 		fileIdx := r.propIter.currProp.fileOffset
-		lastFileIdx = fileIdx
-		lastOffset = prop.offset
-		if _, found := curWays[fileIdx]; !found {
-			curWays[fileIdx] = struct{}{}
-			statFile := r.propIter.statFilePaths[fileIdx]
-			statsFiles = append(statsFiles, statFile)
-			dataFiles = append(dataFiles, strings.Replace(statFile, "_stat", "", 1))
+		ways := r.propIter.propHeap.Len()
+		if ways < lastWays {
+			exhaustedFileIdx = append(exhaustedFileIdx, lastFileIdx)
 		}
-		if curSize >= r.maxSize || curKeys >= r.maxKeys || uint64(len(curWays)) >= r.maxWays {
+		r.curWays[fileIdx] = struct{}{}
+		if curSize >= r.maxSize || curKeys >= r.maxKeys || uint64(len(r.curWays)) >= r.maxWays {
+			dataFiles, statsFiles := r.collectFiles()
+			for _, idx := range exhaustedFileIdx {
+				delete(r.curWays, idx)
+			}
 			return prop.Key, dataFiles, statsFiles, nil
 		}
+		lastFileIdx = fileIdx
+		lastOffset = prop.offset
+		lastWays = ways
 	}
 	if err := r.propIter.Error(); err != nil {
 		return nil, nil, nil, err
 	}
-	maxKeyFile := []string{r.dataFiles[lastFileIdx]}
-	startOffset := []uint64{lastOffset}
-	iter, err := NewMergeIter(ctx, maxKeyFile, startOffset, r.propIter.statFileReader[0].exStorage, 4096)
+	exStorage := r.propIter.statFileReader[0].exStorage
+	maxKey, err := findMaxKey(ctx, r.dataFiles[lastFileIdx], lastOffset, exStorage)
+	r.exhausted = true
+	dataFiles, statsFiles := r.collectFiles()
+	return maxKey, dataFiles, statsFiles, err
+}
+
+func (r *RangeSplitter) collectFiles() (data []string, stats []string) {
+	dataFiles := make([]string, 0, len(r.curWays))
+	statsFiles := make([]string, 0, len(r.curWays))
+	for fileIdx := range r.curWays {
+		statFile := r.propIter.statFilePaths[fileIdx]
+		statsFiles = append(statsFiles, statFile)
+		dataFiles = append(dataFiles, strings.Replace(statFile, "_stat", "", 1))
+	}
+	return dataFiles, statsFiles
+}
+
+func findMaxKey(ctx context.Context, lastFile string, offset uint64, exStorage storage.ExternalStorage) (kv.Key, error) {
+	maxKeyFile := []string{lastFile}
+	startOffset := []uint64{offset}
+	iter, err := NewMergeIter(ctx, maxKeyFile, startOffset, exStorage, 4096)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	var maxKey kv.Key
 	for iter.Next() {
 		if err := iter.Error(); err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		maxKey = iter.Key()
 	}
 	if err := iter.Error(); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	r.exhausted = true
-	return maxKey, dataFiles, statsFiles, nil
+	return maxKey, nil
 }
 
 func (r *RangeSplitter) FileCount() int {

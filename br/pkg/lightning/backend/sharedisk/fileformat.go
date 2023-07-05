@@ -65,7 +65,8 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 	if len(s.rc.lastKey) == 0 || s.rc.currProp.Size >= s.rc.propSizeIdxDistance ||
 		s.rc.currProp.Keys >= s.rc.propKeysIdxDistance {
 		if len(s.rc.lastKey) != 0 {
-			s.rc.props = append(s.rc.props, s.rc.currProp)
+			newProp := *s.rc.currProp
+			s.rc.props = append(s.rc.props, &newProp)
 		}
 		s.rc.currProp.Key = key
 		s.rc.currProp.offset = s.offset
