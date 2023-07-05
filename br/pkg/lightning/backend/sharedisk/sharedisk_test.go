@@ -213,5 +213,5 @@ func TestWriterPerf(t *testing.T) {
 		}
 	}
 	require.Equal(t, rowCnt, mCnt)
-	logutil.BgLogger().Info("read data rate", zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
+	logutil.BgLogger().Info("read data rate", zap.Any("io cnt", ReadIOCnt.Load()), zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
 }
