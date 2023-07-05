@@ -73,7 +73,7 @@ type MergeIter struct {
 	err error
 }
 
-func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64, exStorage storage.ExternalStorage) (*MergeIter, error) {
+func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64, exStorage storage.ExternalStorage, readBufferSuze uint64) (*MergeIter, error) {
 	it := &MergeIter{
 		dataFilePaths:  paths,
 		lastFileOffset: -1,
@@ -82,7 +82,7 @@ func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64
 	it.kvHeap = make([]*kvPair, 0, len(paths))
 	for i, path := range paths {
 		rd := DataFileReader{ctx: ctx, name: path, exStorage: exStorage, currFileOffset: pathsStartOffset[i]}
-		rd.readBuffer = make([]byte, 4096)
+		rd.readBuffer = make([]byte, readBufferSuze)
 		it.dataFileReader = append(it.dataFileReader, &rd)
 		k, v, err := rd.GetNextKV()
 		if err != nil {

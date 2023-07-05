@@ -42,7 +42,7 @@ func NewRangeSplitter(maxSize, maxKeys, maxWays uint64, propIter *MergePropIter,
 
 func (r *RangeSplitter) FirstStartKey(ctx context.Context) (kv.Key, error) {
 	offsets := make([]uint64, len(r.dataFiles))
-	iter, err := NewMergeIter(ctx, r.dataFiles, offsets, r.propIter.statFileReader[0].exStorage)
+	iter, err := NewMergeIter(ctx, r.dataFiles, offsets, r.propIter.statFileReader[0].exStorage, 4096)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (r *RangeSplitter) SplitOne(ctx context.Context) (kv.Key, []string, []strin
 	}
 	maxKeyFile := []string{r.dataFiles[lastFileIdx]}
 	startOffset := []uint64{lastOffset}
-	iter, err := NewMergeIter(ctx, maxKeyFile, startOffset, r.propIter.statFileReader[0].exStorage)
+	iter, err := NewMergeIter(ctx, maxKeyFile, startOffset, r.propIter.statFileReader[0].exStorage, 4096)
 	if err != nil {
 		return nil, nil, nil, err
 	}

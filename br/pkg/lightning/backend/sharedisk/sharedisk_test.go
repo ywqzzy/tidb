@@ -120,7 +120,7 @@ func TestWriter(t *testing.T) {
 		dataFileName = append(dataFileName, "test/"+strconv.Itoa(i))
 		fileStartOffsets = append(fileStartOffsets, 0)
 	}
-	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage)
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, 4096)
 	require.NoError(t, err)
 	mCnt := 0
 	var prevKey []byte
@@ -133,4 +133,85 @@ func TestWriter(t *testing.T) {
 		}
 	}
 	require.Equal(t, 20000, mCnt)
+}
+
+func randomString(n int) string {
+	const alphanum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	var bytes = make([]byte, n)
+	for i := range bytes {
+		bytes[i] = alphanum[rand.Intn(len(alphanum))]
+	}
+	return string(bytes)
+}
+
+func TestWriterPerf(t *testing.T) {
+	var keySize = 256
+	var valueSize = 1000
+	var rowCnt = 1000000
+	var readBufferSize = 1024 * 1024
+	var memLimit = 16 * 1024 * 1024
+	MemQuota = memLimit
+
+	bucket := "nfs"
+	prefix := "tools_test_data/sharedisk"
+	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
+		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
+	backend, err := storage2.ParseBackend(uri, nil)
+	require.NoError(t, err)
+	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
+	require.NoError(t, err)
+
+	writer := NewWriter(context.Background(), storage, "test", 0, func(int, int) {})
+	writer.filenamePrefix = "test"
+	writeBufferSize = 1024
+
+	pool := membuf.NewPool()
+	defer pool.Destroy()
+	writer.kvBuffer = pool.NewBuffer()
+
+	ctx := context.Background()
+	for i := 0; i < rowCnt; i += 10000 {
+		var kvs []common.KvPair
+		for j := 0; j < 10000; j++ {
+			var kv common.KvPair
+			kv.Key = []byte(randomString(keySize))
+			kv.Val = []byte(randomString(valueSize))
+			kvs = append(kvs, kv)
+		}
+		err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+	}
+	err = writer.flushKVs(context.Background())
+	require.NoError(t, err)
+	err = writer.kvStore.Finish()
+	require.NoError(t, err)
+
+	logutil.BgLogger().Info("writer info", zap.Any("seq", writer.currentSeq))
+
+	defer func() {
+		for i := 0; i < writer.currentSeq; i++ {
+			storage.DeleteFile(ctx, "test/"+strconv.Itoa(i))
+			storage.DeleteFile(ctx, "test_stat/"+strconv.Itoa(i))
+		}
+	}()
+
+	dataFileName := make([]string, 0)
+	fileStartOffsets := make([]uint64, 0)
+	for i := 0; i < writer.currentSeq; i++ {
+		dataFileName = append(dataFileName, "test/"+strconv.Itoa(i))
+		fileStartOffsets = append(fileStartOffsets, 0)
+	}
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, uint64(readBufferSize))
+	require.NoError(t, err)
+	mCnt := 0
+	prevKey := make([]byte, 0, keySize)
+	for mIter.Next() {
+		mCnt++
+		if len(prevKey) > 0 {
+			currKey := mIter.Key()
+			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
+			copy(prevKey, currKey)
+		}
+	}
+	require.Equal(t, rowCnt, mCnt)
+	logutil.BgLogger().Info("read data rate", zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
 }

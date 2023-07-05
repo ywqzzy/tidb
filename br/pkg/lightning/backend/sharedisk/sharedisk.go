@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
@@ -35,6 +37,9 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 )
+
+var ReadByteForTest atomic.Uint64
+var ReadTimeForTest atomic.Uint64
 
 type rangeOffsets struct {
 	Size uint64
@@ -124,7 +129,8 @@ type Engine struct {
 	rc *RangePropertiesCollector
 }
 
-const WriteBatchSize = 8 * 1024
+var WriteBatchSize = 8 * 1024
+var MemQuota = 8 * 1024
 
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, onClose func(int, int)) *Writer {
@@ -135,7 +141,7 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	return &Writer{
 		ctx:               ctx,
 		engine:            engine,
-		memtableSizeLimit: WriteBatchSize,
+		memtableSizeLimit: MemQuota,
 		keyAdapter:        &local.NoopKeyAdapter{},
 		exStorage:         externalStorage,
 		memBufPool:        pool,
@@ -163,6 +169,7 @@ type Writer struct {
 	memBufPool *membuf.Pool
 	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
+	batchSize  int
 
 	currentSeq int
 	onClose    func(writerID, currentSeq int)
@@ -199,7 +206,12 @@ func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 	if fileStartOffset == fileEndOffset {
 		return false, nil
 	}
+	startTime := time.Now()
 	maxOffset, err := storage.ReadPartialFileDirectly(dr.ctx, dr.exStorage, dr.name, fileStartOffset, fileEndOffset, dr.readBuffer[0:])
+	elasp := time.Since(startTime).Microseconds()
+	ReadByteForTest.Add(maxOffset)
+	ReadTimeForTest.Add(uint64(elasp))
+	//logutil.BgLogger().Info("read data", zap.Any("name", dr.name), zap.Any("bytes cnt", maxOffset), zap.Any("elasp", elasp))
 	if err != nil {
 		return false, err
 	}
@@ -381,16 +393,18 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 
 	keyAdapter := w.keyAdapter
 	for _, pair := range kvs {
+		w.batchSize += len(pair.Key) + len(pair.Val)
 		buf := w.kvBuffer.AllocBytes(keyAdapter.EncodedLen(pair.Key, pair.RowID))
 		key := keyAdapter.Encode(buf[:0], pair.Key, pair.RowID)
 		val := w.kvBuffer.AddBytes(pair.Val)
 		w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
-		if len(w.writeBatch) >= w.memtableSizeLimit {
+		if w.batchSize >= w.memtableSizeLimit {
 			if err := w.flushKVs(ctx); err != nil {
 				return err
 			}
 			w.writeBatch = w.writeBatch[:0]
 			w.kvBuffer.Reset()
+			w.batchSize = 0
 		}
 	}
 

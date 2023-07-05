@@ -230,7 +230,7 @@ func (remote *Backend) SetRange(ctx context.Context, start, end kv.Key, dataFile
 
 func (remote *Backend) findStartKey(ctx context.Context, dataFiles []string) (kv.Key, error) {
 	offsets := make([]uint64, len(dataFiles))
-	iter, err := sharedisk.NewMergeIter(ctx, dataFiles, offsets, remote.externalStorage)
+	iter, err := sharedisk.NewMergeIter(ctx, dataFiles, offsets, remote.externalStorage, 4096)
 	if err != nil {
 		return nil, err
 	}
@@ -1535,7 +1535,7 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 		return errors.Trace(err)
 	}
 
-	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage)
+	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage, 4096)
 	if err != nil {
 		return errors.Trace(err)
 	}
