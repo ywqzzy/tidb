@@ -110,7 +110,8 @@ func NewBackfillSchedulerHandle(taskMeta []byte, d *ddl, stepForImport bool) (sc
 	if stepForImport {
 		bh.stepForImport = true
 		if bcCtx, ok := ingest.LitBackCtxMgr.Load(jobMeta.ID); ok {
-			if _, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+			if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+				bc.SetImportPhase()
 				bh.stepForOrderedImport = true
 			}
 		}
@@ -307,7 +308,8 @@ func (b *backfillSchedulerHandle) SplitSubtask(ctx context.Context, subtask []by
 		return nil, err
 	}
 
-	if b.isPartition {
+	_, isRemote := b.bc.GetBackend().(*remote.Backend)
+	if b.isPartition || isRemote {
 		return nil, b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 	}
 	return nil, b.doFlushAndHandleError(ingest.FlushModeForceLocalAndCheckDiskQuota)

@@ -154,6 +154,7 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 		writerID:          writerID,
 		kvStore:           nil,
 		onClose:           onClose,
+		closed:            false,
 	}
 }
 
@@ -174,6 +175,7 @@ type Writer struct {
 
 	currentSeq int
 	onClose    func(writerID, currentSeq int)
+	closed     bool
 
 	tikvCodec      tikv.Codec
 	filenamePrefix string
@@ -193,33 +195,39 @@ type DataFileReader struct {
 	bufferMaxOffset  uint64
 	currBufferOffset uint64
 	currFileOffset   uint64
+	kvBoundaryOffset uint64
 	init             bool
 }
 
 func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 	//logutil.BgLogger().Info("getMoreDataFromStorage")
 
-	fileStartOffset := dr.currFileOffset + dr.currBufferOffset
-	fileEndOffset := dr.currFileOffset + dr.currBufferOffset + uint64(len(dr.readBuffer))
-	if fileEndOffset > dr.fileMaxOffset {
-		fileEndOffset = dr.fileMaxOffset
+	start := dr.currFileOffset
+	end := dr.currFileOffset + dr.kvBoundaryOffset
+	if end > dr.fileMaxOffset {
+		end = dr.fileMaxOffset
 	}
-	if fileStartOffset == fileEndOffset {
+	if start == end {
 		return false, nil
 	}
+	// Move the unread data to the beginning of the buffer.
+	unreadLen := len(dr.readBuffer) - int(dr.kvBoundaryOffset)
+	for i := 0; i < unreadLen; i++ {
+		dr.readBuffer[i] = dr.readBuffer[int(dr.kvBoundaryOffset)+i]
+	}
 	startTime := time.Now()
-	maxOffset, err := storage.ReadPartialFileDirectly(dr.ctx, dr.exStorage, dr.name, fileStartOffset, fileEndOffset, dr.readBuffer[0:])
-	elasp := time.Since(startTime).Microseconds()
-	ReadByteForTest.Add(maxOffset)
-	ReadTimeForTest.Add(uint64(elasp))
+	nBytes, err := storage.ReadPartialFileDirectly(dr.ctx, dr.exStorage, dr.name, start, end, dr.readBuffer[unreadLen:])
+	elapsed := time.Since(startTime).Microseconds()
+	ReadByteForTest.Add(nBytes)
+	ReadTimeForTest.Add(uint64(elapsed))
 	ReadIOCnt.Add(1)
 	//logutil.BgLogger().Info("read data", zap.Any("name", dr.name), zap.Any("bytes cnt", maxOffset), zap.Any("elasp", elasp))
 	if err != nil {
 		return false, err
 	}
-	dr.bufferMaxOffset = maxOffset
+	dr.bufferMaxOffset = nBytes + uint64(unreadLen)
 	dr.currBufferOffset = 0
-	dr.currFileOffset = fileStartOffset
+	dr.currFileOffset = dr.currFileOffset + nBytes
 	return true, nil
 }
 
@@ -230,6 +238,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 			return nil, nil, err
 		}
 		dr.fileMaxOffset = maxOffset
+		dr.kvBoundaryOffset = uint64(len(dr.readBuffer))
 		get, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
@@ -240,6 +249,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 
 		dr.init = true
 	}
+	dr.kvBoundaryOffset = dr.currBufferOffset
 	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
 		get, err := dr.getMoreDataFromStorage()
 		if err != nil {
@@ -248,6 +258,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 		if !get {
 			return nil, nil, nil
 		}
+		return dr.GetNextKV()
 	}
 	keyLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
 	dr.currBufferOffset += 8
@@ -257,8 +268,9 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		return dr.GetNextKV()
 	}
-	key := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+uint64(keyLen)]
+	key := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+keyLen]
 	dr.currBufferOffset += keyLen
 
 	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
@@ -266,6 +278,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		return dr.GetNextKV()
 	}
 	valLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
 	dr.currBufferOffset += 8
@@ -275,9 +288,10 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		return dr.GetNextKV()
 	}
-	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+uint64(valLen)]
-	dr.currBufferOffset += uint64(valLen)
+	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+valLen]
+	dr.currBufferOffset += valLen
 	return key, val, nil
 }
 
@@ -292,27 +306,33 @@ type statFileReader struct {
 	readBuffer       []byte
 	currBufferOffset uint64
 	currFileOffset   uint64
+	kvBoundaryOffset uint64
 	init             bool
 }
 
 func (sr *statFileReader) getMoreDataFromStorage() (bool, error) {
 	//logutil.BgLogger().Info("getMoreDataFromStorage")
 
-	fileStartOffset := sr.currFileOffset + sr.currBufferOffset
-	fileEndOffset := sr.currFileOffset + sr.currBufferOffset + uint64(len(sr.readBuffer))
-	if fileEndOffset > sr.fileMaxOffset {
-		fileEndOffset = sr.fileMaxOffset
+	start := sr.currFileOffset
+	end := sr.currFileOffset + sr.kvBoundaryOffset
+	if end > sr.fileMaxOffset {
+		end = sr.fileMaxOffset
 	}
-	if fileStartOffset == fileEndOffset {
+	if start == end {
 		return false, nil
 	}
-	maxOffset, err := storage.ReadPartialFileDirectly(sr.ctx, sr.exStorage, sr.name, fileStartOffset, fileEndOffset, sr.readBuffer[0:])
+	// Move the unread data to the beginning of the buffer
+	unreadLen := len(sr.readBuffer) - int(sr.kvBoundaryOffset)
+	for i := 0; i < unreadLen; i++ {
+		sr.readBuffer[i] = sr.readBuffer[int(sr.kvBoundaryOffset)+i]
+	}
+	nBytes, err := storage.ReadPartialFileDirectly(sr.ctx, sr.exStorage, sr.name, start, end, sr.readBuffer[unreadLen:])
 	if err != nil {
 		return false, err
 	}
-	sr.bufferMaxOffset = maxOffset
+	sr.bufferMaxOffset = nBytes + uint64(unreadLen)
 	sr.currBufferOffset = 0
-	sr.currFileOffset = fileStartOffset
+	sr.currFileOffset = sr.currFileOffset + nBytes
 	return true, nil
 }
 
@@ -323,6 +343,7 @@ func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
 			return nil, err
 		}
 		sr.fileMaxOffset = maxOffset
+		sr.kvBoundaryOffset = uint64(len(sr.readBuffer))
 		get, err := sr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, err
@@ -418,6 +439,10 @@ func (w *Writer) IsSynced() bool {
 }
 
 func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
+	if w.closed {
+		return status(true), nil
+	}
+	w.closed = true
 	defer w.memBufPool.Destroy()
 	defer w.onClose(w.writerID, w.currentSeq)
 	err := w.flushKVs(ctx)
@@ -464,7 +489,8 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	}
 
 	if w.engine.rc.currProp.Keys > 0 {
-		w.engine.rc.props = append(w.engine.rc.props, w.engine.rc.currProp)
+		newProp := *w.engine.rc.currProp
+		w.engine.rc.props = append(w.engine.rc.props, &newProp)
 	}
 	_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
 	if err != nil {
