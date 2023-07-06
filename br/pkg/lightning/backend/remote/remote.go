@@ -148,6 +148,8 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 			maxWriterID int
 			writersSeq  map[int]int
 			writers     []backend.EngineWriter
+			minKey      kv.Key
+			maxKey      kv.Key
 		}{
 			writersSeq: map[int]int{},
 			writers:    make([]backend.EngineWriter, 0, 4),
@@ -176,6 +178,8 @@ type Backend struct {
 		maxWriterID int
 		writersSeq  map[int]int
 		writers     []backend.EngineWriter
+		minKey      kv.Key
+		maxKey      kv.Key
 	}
 	pdCtl *pdutil.PdController
 	tls   *common.TLS
@@ -316,8 +320,9 @@ func (remote *Backend) ResetEngine(ctx context.Context, engineUUID uuid.UUID) er
 }
 
 func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriterConfig, engineUUID uuid.UUID) (backend.EngineWriter, error) {
-	onClose := func(writerID, currentSeq int) {
+	onClose := func(writerID, currentSeq int, min, max kv.Key) {
 		remote.saveWriterSeq(writerID, currentSeq)
+		remote.recordMinMax(min, max)
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
 	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
@@ -343,6 +348,23 @@ func (remote *Backend) saveWriterSeq(writerID int, currentSeq int) {
 	remote.mu.writersSeq[writerID] = currentSeq
 }
 
+func (remote *Backend) recordMinMax(min, max kv.Key) {
+	remote.mu.Lock()
+	defer remote.mu.Unlock()
+	if remote.mu.minKey == nil || min.Cmp(remote.mu.minKey) < 0 {
+		remote.mu.minKey = min
+	}
+	if remote.mu.maxKey == nil || max.Cmp(remote.mu.maxKey) > 0 {
+		remote.mu.maxKey = max
+	}
+}
+
+func (remote *Backend) GetMinMaxKey() (min, max kv.Key) {
+	remote.mu.Lock()
+	defer remote.mu.Unlock()
+	return remote.mu.minKey, remote.mu.maxKey
+}
+
 // GetRangeSplitter returns a RangeSplitter that can be used to split the range into multiple subtasks.
 func (remote *Backend) GetRangeSplitter(ctx context.Context, instanceCnt int) (*sharedisk.RangeSplitter, error) {
 	dataFiles, statsFiles, err := remote.getAllFileNames(ctx)
@@ -356,9 +378,9 @@ func (remote *Backend) GetRangeSplitter(ctx context.Context, instanceCnt int) (*
 	if err != nil {
 		return nil, err
 	}
-	// TODO(tangenta): determine the max size and max ways.
-	maxKeys := uint64(len(statsFiles) * sharedisk.WriteBatchSize / instanceCnt)
-	rs := sharedisk.NewRangeSplitter(math.MaxUint64, maxKeys, math.MaxUint64, mergePropIter, dataFiles)
+	// TODO(tangenta): determine the max key and max ways.
+	maxSize := uint64(len(statsFiles) * sharedisk.WriteBatchSize / instanceCnt)
+	rs := sharedisk.NewRangeSplitter(maxSize, math.MaxUint64, math.MaxUint64, mergePropIter, dataFiles)
 	return rs, nil
 }
 
@@ -1546,6 +1568,10 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
+	log.FromContext(ctx).Info("SeekPropsOffsets",
+		zap.Uint64s("offsets", offsets),
+		zap.String("startKey", hex.EncodeToString(remote.startKey)),
+		zap.Strings("statsFiles", sharedisk.PrettyFileNames(remote.statsFiles)))
 
 	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage, 4096)
 	if err != nil {
@@ -1557,6 +1583,9 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 
 	var remainingStartKey []byte
 	for iter.Next() {
+		//readableKey := hex.EncodeToString(iter.Key())
+		//_, _, vals, err := tablecodec.DecodeIndexKey(iter.Key())
+		//log.FromContext(ctx).Info("iter", zap.String("key", readableKey), zap.String("colVal", vals[0]), zap.Error(err))
 		key := kv.Key(iter.Key())
 		if key.Cmp(remote.startKey) < 0 || key.Cmp(remote.endKey) > 0 {
 			continue

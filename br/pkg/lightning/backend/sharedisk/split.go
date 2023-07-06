@@ -15,10 +15,8 @@
 package sharedisk
 
 import (
-	"context"
 	"strings"
 
-	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/kv"
 )
 
@@ -43,25 +41,12 @@ func NewRangeSplitter(maxSize, maxKeys, maxWays uint64, propIter *MergePropIter,
 	}
 }
 
-func (r *RangeSplitter) FirstStartKey(ctx context.Context) (kv.Key, error) {
-	offsets := make([]uint64, len(r.dataFiles))
-	iter, err := NewMergeIter(ctx, r.dataFiles, offsets, r.propIter.statFileReader[0].exStorage, 4096)
-	if err != nil {
-		return nil, err
-	}
-	if iter.Next() {
-		return iter.Key(), nil
-	}
-	return nil, nil
-}
-
-func (r *RangeSplitter) SplitOne(ctx context.Context) (kv.Key, []string, []string, error) {
+func (r *RangeSplitter) SplitOne() (kv.Key, []string, []string, error) {
 	if r.exhausted {
 		return nil, nil, nil, nil
 	}
 	var curSize, curKeys uint64
 	var lastFileIdx int
-	var lastOffset uint64
 	var lastWays int
 	var exhaustedFileIdx []int
 	for r.propIter.Next() {
@@ -85,17 +70,10 @@ func (r *RangeSplitter) SplitOne(ctx context.Context) (kv.Key, []string, []strin
 			return prop.Key, dataFiles, statsFiles, nil
 		}
 		lastFileIdx = fileIdx
-		lastOffset = prop.offset
 		lastWays = ways
 	}
-	if err := r.propIter.Error(); err != nil {
-		return nil, nil, nil, err
-	}
-	exStorage := r.propIter.statFileReader[0].exStorage
-	maxKey, err := findMaxKey(ctx, r.dataFiles[lastFileIdx], lastOffset, exStorage)
-	r.exhausted = true
 	dataFiles, statsFiles := r.collectFiles()
-	return maxKey, dataFiles, statsFiles, err
+	return nil, dataFiles, statsFiles, r.propIter.Error()
 }
 
 func (r *RangeSplitter) collectFiles() (data []string, stats []string) {
@@ -107,28 +85,4 @@ func (r *RangeSplitter) collectFiles() (data []string, stats []string) {
 		dataFiles = append(dataFiles, strings.Replace(statFile, "_stat", "", 1))
 	}
 	return dataFiles, statsFiles
-}
-
-func findMaxKey(ctx context.Context, lastFile string, offset uint64, exStorage storage.ExternalStorage) (kv.Key, error) {
-	maxKeyFile := []string{lastFile}
-	startOffset := []uint64{offset}
-	iter, err := NewMergeIter(ctx, maxKeyFile, startOffset, exStorage, 4096)
-	if err != nil {
-		return nil, err
-	}
-	var maxKey kv.Key
-	for iter.Next() {
-		if err := iter.Error(); err != nil {
-			return nil, err
-		}
-		maxKey = iter.Key()
-	}
-	if err := iter.Error(); err != nil {
-		return nil, err
-	}
-	return maxKey, nil
-}
-
-func (r *RangeSplitter) FileCount() int {
-	return len(r.propIter.statFileReader)
 }
