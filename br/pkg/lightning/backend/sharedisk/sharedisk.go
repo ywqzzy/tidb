@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -187,37 +188,50 @@ type DataFileReader struct {
 
 	name      string
 	exStorage storage.ExternalStorage
+	rsc       storage.ReadSeekCloser
 
-	fileMaxOffset    uint64
-	readBuffer       []byte
-	bufferMaxOffset  uint64
-	currBufferOffset uint64
-	currFileOffset   uint64
-	init             bool
+	fileMaxOffset uint64
+	readBuffer    []byte
+	readBuffer2   []byte
+	useBuffer2    bool
+	bufferMu      sync.Mutex
+
+	bufferMaxOffset   uint64
+	currKVStartOffset uint64
+	currBufferOffset  uint64
+	currFileOffset    uint64
+	init              bool
+}
+
+func (dr *DataFileReader) loadNewData() {
+	dr.bufferMu.Lock()
 }
 
 func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 	//logutil.BgLogger().Info("getMoreDataFromStorage")
-
 	fileStartOffset := dr.currFileOffset + dr.currBufferOffset
-	fileEndOffset := dr.currFileOffset + dr.currBufferOffset + uint64(len(dr.readBuffer))
-	if fileEndOffset > dr.fileMaxOffset {
-		fileEndOffset = dr.fileMaxOffset
-	}
-	if fileStartOffset == fileEndOffset {
-		return false, nil
-	}
+	//fileEndOffset := dr.currFileOffset + dr.currBufferOffset + uint64(len(dr.readBuffer))
+	//if fileEndOffset > dr.fileMaxOffset {
+	//	fileEndOffset = dr.fileMaxOffset
+	//}
+	//if fileStartOffset == fileEndOffset {
+	//	return false, nil
+	//}
 	startTime := time.Now()
-	maxOffset, err := storage.ReadPartialFileDirectly(dr.ctx, dr.exStorage, dr.name, fileStartOffset, fileEndOffset, dr.readBuffer[0:])
+	maxOffset, err := dr.rsc.Read(dr.readBuffer[0:])
+	//maxOffset, err := storage.ReadPartialFileDirectly(dr.ctx, dr.exStorage, dr.name, fileStartOffset, fileEndOffset, dr.readBuffer[0:])
 	elasp := time.Since(startTime).Microseconds()
-	ReadByteForTest.Add(maxOffset)
+	ReadByteForTest.Add(uint64(maxOffset))
 	ReadTimeForTest.Add(uint64(elasp))
 	ReadIOCnt.Add(1)
-	//logutil.BgLogger().Info("read data", zap.Any("name", dr.name), zap.Any("bytes cnt", maxOffset), zap.Any("elasp", elasp))
+	logutil.BgLogger().Info("read data", zap.Any("name", dr.name), zap.Any("bytes cnt", maxOffset), zap.Any("elasp us", elasp))
 	if err != nil {
+		if err == io.EOF {
+			return false, nil
+		}
 		return false, err
 	}
-	dr.bufferMaxOffset = maxOffset
+	dr.bufferMaxOffset = uint64(maxOffset)
 	dr.currBufferOffset = 0
 	dr.currFileOffset = fileStartOffset
 	return true, nil
@@ -225,11 +239,16 @@ func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
 
 func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 	if !dr.init {
-		maxOffset, err := storage.GetFileMaxOffset(dr.ctx, dr.exStorage, dr.name)
+		var err error
+		dr.rsc, err = dr.exStorage.Open(dr.ctx, dr.name)
 		if err != nil {
 			return nil, nil, err
 		}
-		dr.fileMaxOffset = maxOffset
+		//maxOffset, err := storage.GetFileMaxOffset(dr.ctx, dr.exStorage, dr.name)
+		//if err != nil {
+		//	return nil, nil, err
+		//}
+		//dr.fileMaxOffset = maxOffset
 		get, err := dr.getMoreDataFromStorage()
 		if err != nil {
 			return nil, nil, err
@@ -278,6 +297,7 @@ func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
 	}
 	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+uint64(valLen)]
 	dr.currBufferOffset += uint64(valLen)
+	dr.currKVStartOffset +=
 	return key, val, nil
 }
 

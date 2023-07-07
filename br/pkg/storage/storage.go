@@ -5,15 +5,14 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/pingcap/errors"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	berrors "github.com/pingcap/tidb/br/pkg/errors"
+	"io"
+	"net/http"
 )
 
 // Permission represents the permission we need to check in create storage.
