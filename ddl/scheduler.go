@@ -73,6 +73,8 @@ type BackfillSubTaskMeta struct {
 	EndKey          []byte   `json:"end_key"`
 	DataFiles       []string `json:"data_files"`
 	StatsFiles      []string `json:"stats_files"`
+	MinKey          []byte   `json:"min_key"`
+	MaxKey          []byte   `json:"max_key"`
 }
 
 // NewBackfillSchedulerHandle creates a new backfill scheduler.
@@ -334,13 +336,28 @@ func (b *backfillSchedulerHandle) orderedImport(ctx context.Context, subtask []b
 }
 
 // OnSubtaskFinished implements the Scheduler interface.
-func (*backfillSchedulerHandle) OnSubtaskFinished(_ context.Context, meta []byte) ([]byte, error) {
+func (b *backfillSchedulerHandle) OnSubtaskFinished(_ context.Context, meta []byte) ([]byte, error) {
 	failpoint.Inject("mockDMLExecutionAddIndexSubTaskFinish", func(val failpoint.Value) {
 		//nolint:forcetypeassert
 		if val.(bool) && MockDMLExecutionAddIndexSubTaskFinish != nil {
 			MockDMLExecutionAddIndexSubTaskFinish()
 		}
 	})
+	if bcCtx, ok := ingest.LitBackCtxMgr.Load(b.job.ID); ok {
+		if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+			var subtaskMeta BackfillSubTaskMeta
+			err := json.Unmarshal(meta, &subtaskMeta)
+			if err != nil {
+				return nil, err
+			}
+			subtaskMeta.MinKey, subtaskMeta.MaxKey = bc.GetMinMaxKey()
+			meta, err = json.Marshal(subtaskMeta)
+			if err != nil {
+				return nil, err
+			}
+			return meta, nil
+		}
+	}
 	return meta, nil
 }
 

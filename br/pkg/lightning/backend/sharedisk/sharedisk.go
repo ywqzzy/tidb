@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -32,6 +34,7 @@ import (
 	"github.com/pingcap/tidb/br/pkg/membuf"
 	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/keyspace"
+	tidbkv "github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
 	"go.uber.org/zap"
@@ -133,8 +136,10 @@ type Engine struct {
 var WriteBatchSize = 8 * 1024
 var MemQuota = 8 * 1024
 
+type OnCloseFunc func(writerID int, seq int, min tidbkv.Key, max tidbkv.Key)
+
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
-	prefix string, writerID int, onClose func(int, int)) *Writer {
+	prefix string, writerID int, onClose OnCloseFunc) *Writer {
 	// TODO(tangenta): make it configurable.
 	engine := NewEngine(2048, 256)
 	pool := membuf.NewPool()
@@ -174,12 +179,14 @@ type Writer struct {
 	batchSize  int
 
 	currentSeq int
-	onClose    func(writerID, currentSeq int)
+	onClose    OnCloseFunc
 	closed     bool
 
 	tikvCodec      tikv.Codec
 	filenamePrefix string
 	writerID       int
+	minKey         tidbkv.Key
+	maxKey         tidbkv.Key
 
 	kvStore *KeyValueStore
 }
@@ -444,7 +451,7 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	}
 	w.closed = true
 	defer w.memBufPool.Destroy()
-	defer w.onClose(w.writerID, w.currentSeq)
+	defer w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
 	err := w.flushKVs(ctx)
 	if err != nil {
 		return status(false), err
@@ -456,10 +463,41 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	return status(true), nil
 }
 
+func (w *Writer) recordMinMax(newMin, newMax tidbkv.Key) {
+	if len(w.minKey) == 0 || newMin.Cmp(w.minKey) < 0 {
+		w.minKey = newMin.Clone()
+	}
+	if len(w.maxKey) == 0 || newMax.Cmp(w.maxKey) > 0 {
+		w.maxKey = newMax.Clone()
+	}
+}
+
 type status bool
 
 func (s status) Flushed() bool {
 	return bool(s)
+}
+
+func CheckDataCnt(file string, exStorage storage.ExternalStorage) error {
+	iter, err := NewMergeIter(context.Background(), []string{file}, []uint64{0}, exStorage, 4096)
+	if err != nil {
+		return err
+	}
+	var cnt int
+	var firstKey, lastKey tidbkv.Key
+	for iter.Next() {
+		cnt++
+		if len(firstKey) == 0 {
+			firstKey = iter.Key()
+			firstKey = firstKey.Clone()
+		}
+		lastKey = iter.Key()
+	}
+	lastKey = lastKey.Clone()
+	logutil.BgLogger().Info("check data cnt", zap.Int("cnt", cnt),
+		zap.Strings("name", PrettyFileNames([]string{file})),
+		zap.String("first", hex.EncodeToString(firstKey)), zap.String("last", hex.EncodeToString(lastKey)))
+	return iter.Error()
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {
@@ -467,6 +505,12 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	//defer func() {
+	//	err := CheckDataCnt(filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq-1)), w.exStorage)
+	//	if err != nil {
+	//		logutil.BgLogger().Error("check data cnt failed", zap.Error(err))
+	//	}
+	//}()
 	defer func() {
 		dataWriter.Close(w.ctx)
 		statWriter.Close(w.ctx)
@@ -496,6 +540,9 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key)
+
 	w.engine.rc.reset()
 	return nil
 }
@@ -514,4 +561,13 @@ func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, storage.Exte
 		return nil, nil, err
 	}
 	return dataWriter, statWriter, nil
+}
+
+func PrettyFileNames(files []string) []string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		dir, file := filepath.Split(f)
+		names = append(names, fmt.Sprintf("%s/%s", filepath.Base(dir), file))
+	}
+	return names
 }
