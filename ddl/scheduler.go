@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
+	"github.com/pingcap/tidb/br/pkg/lightning/log"
 	"github.com/pingcap/tidb/ddl/ingest"
 	ddlutil "github.com/pingcap/tidb/ddl/util"
 	"github.com/pingcap/tidb/disttask/framework/proto"
@@ -336,7 +337,7 @@ func (b *backfillSchedulerHandle) orderedImport(ctx context.Context, subtask []b
 }
 
 // OnSubtaskFinished implements the Scheduler interface.
-func (b *backfillSchedulerHandle) OnSubtaskFinished(_ context.Context, meta []byte) ([]byte, error) {
+func (b *backfillSchedulerHandle) OnSubtaskFinished(ctx context.Context, meta []byte) ([]byte, error) {
 	failpoint.Inject("mockDMLExecutionAddIndexSubTaskFinish", func(val failpoint.Value) {
 		//nolint:forcetypeassert
 		if val.(bool) && MockDMLExecutionAddIndexSubTaskFinish != nil {
@@ -351,6 +352,9 @@ func (b *backfillSchedulerHandle) OnSubtaskFinished(_ context.Context, meta []by
 				return nil, err
 			}
 			subtaskMeta.MinKey, subtaskMeta.MaxKey = bc.GetMinMaxKey()
+			log.FromContext(ctx).Warn("get key boundary on subtask finished",
+				zap.String("min", hex.EncodeToString(subtaskMeta.MinKey)),
+				zap.String("max", hex.EncodeToString(subtaskMeta.MaxKey)))
 			meta, err = json.Marshal(subtaskMeta)
 			if err != nil {
 				return nil, err

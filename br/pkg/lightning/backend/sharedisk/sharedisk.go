@@ -449,9 +449,10 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if w.closed {
 		return status(true), nil
 	}
+	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
+		zap.String("minKey", hex.EncodeToString(w.minKey)), zap.String("maxKey", hex.EncodeToString(w.maxKey)))
 	w.closed = true
 	defer w.memBufPool.Destroy()
-	defer w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
 	err := w.flushKVs(ctx)
 	if err != nil {
 		return status(false), err
@@ -460,6 +461,7 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if err != nil {
 		return status(false), err
 	}
+	w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
 	return status(true), nil
 }
 
@@ -526,7 +528,6 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 
 	for i := 0; i < len(w.writeBatch); i++ {
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)
-		//logutil.BgLogger().Info("add key", zap.Any("key", w.writeBatch[i].Key), zap.Any("value", w.writeBatch[i].Val))
 		if err != nil {
 			return err
 		}
