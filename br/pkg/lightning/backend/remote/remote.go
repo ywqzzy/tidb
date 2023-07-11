@@ -147,8 +147,10 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 			sync.RWMutex
 			maxWriterID int
 			writersSeq  map[int]int
+			writers     []backend.EngineWriter
 		}{
 			writersSeq: map[int]int{},
+			writers:    make([]backend.EngineWriter, 0, 4),
 		},
 		pdCtl:               pdCtl,
 		tls:                 tls,
@@ -158,6 +160,7 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 		tikvCodec:           tikvCodec,
 		bufferPool:          membuf.NewPool(membuf.WithAllocator(manual.Allocator{})),
 		writeLimiter:        writeLimiter,
+		phase:               PhaseUpload,
 	}
 	if err = bc.checkMultiIngestSupport(ctx); err != nil {
 		return nil, common.ErrCheckMultiIngest.Wrap(err).GenWithStackByArgs()
@@ -172,6 +175,7 @@ type Backend struct {
 		sync.RWMutex
 		maxWriterID int
 		writersSeq  map[int]int
+		writers     []backend.EngineWriter
 	}
 	pdCtl *pdutil.PdController
 	tls   *common.TLS
@@ -188,6 +192,16 @@ type Backend struct {
 	endKey              kv.Key
 	dataFiles           []string
 	statsFiles          []string
+	phase               string
+}
+
+const (
+	PhaseUpload = "upload"
+	PhaseImport = "import"
+)
+
+func (remote *Backend) SetImportPhase() {
+	remote.phase = PhaseImport
 }
 
 func (remote *Backend) Close() {
@@ -214,13 +228,6 @@ func (remote *Backend) SetRange(ctx context.Context, start, end kv.Key, dataFile
 	if start.Cmp(end) > 0 {
 		return errors.New("invalid range")
 	}
-	if len(start) == 0 {
-		s, err := remote.findStartKey(ctx, dataFiles)
-		if err != nil {
-			return err
-		}
-		start = s
-	}
 	remote.startKey = start
 	remote.endKey = end
 	remote.dataFiles = dataFiles
@@ -228,27 +235,28 @@ func (remote *Backend) SetRange(ctx context.Context, start, end kv.Key, dataFile
 	return nil
 }
 
-func (remote *Backend) findStartKey(ctx context.Context, dataFiles []string) (kv.Key, error) {
-	offsets := make([]uint64, len(dataFiles))
-	iter, err := sharedisk.NewMergeIter(ctx, dataFiles, offsets, remote.externalStorage, 4096)
-	if err != nil {
-		return nil, err
-	}
-	if iter.Next() {
-		return iter.Key(), nil
-	}
-	return nil, nil
-}
-
 func (remote *Backend) ImportEngine(ctx context.Context, engineUUID uuid.UUID, regionSplitSize, regionSplitKeys int64) error {
-	if len(remote.startKey) == 0 {
-		// No data.
+	switch remote.phase {
+	case PhaseUpload:
+		for _, w := range remote.mu.writers {
+			_, err := w.Close(ctx)
+			if err != nil {
+				return err
+			}
+		}
 		return nil
+	case PhaseImport:
+		if len(remote.startKey) == 0 {
+			// No data.
+			return nil
+		}
+		return remote.importEngine(ctx, engineUUID, []Range{{
+			start: remote.startKey,
+			end:   remote.endKey,
+		}}, regionSplitSize, regionSplitKeys)
+	default:
+		panic("unreachable")
 	}
-	return remote.importEngine(ctx, engineUUID, []Range{{
-		start: remote.startKey,
-		end:   remote.endKey,
-	}}, regionSplitSize, regionSplitKeys)
 }
 
 func (remote *Backend) importEngine(ctx context.Context, engineUUID uuid.UUID, regionRanges []Range,
@@ -312,7 +320,11 @@ func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriter
 		remote.saveWriterSeq(writerID, currentSeq)
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
-	return sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose), nil
+	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
+	remote.mu.Lock()
+	remote.mu.writers = append(remote.mu.writers, writer)
+	remote.mu.Unlock()
+	return writer, nil
 }
 
 func (remote *Backend) allocWriterID() int {
@@ -1546,7 +1558,7 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 	var remainingStartKey []byte
 	for iter.Next() {
 		key := kv.Key(iter.Key())
-		if key.Cmp(remote.startKey) < 0 || key.Cmp(remote.endKey) >= 0 {
+		if key.Cmp(remote.startKey) < 0 || key.Cmp(remote.endKey) > 0 {
 			continue
 		}
 		kvSize := int64(len(iter.Key()) + len(iter.Value()))

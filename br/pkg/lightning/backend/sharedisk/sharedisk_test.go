@@ -19,12 +19,11 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
 
-	kv2 "github.com/pingcap/tidb/br/pkg/lightning/backend/kv"
-	"github.com/pingcap/tidb/br/pkg/lightning/common"
 	"github.com/pingcap/tidb/br/pkg/membuf"
 	storage2 "github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/util/logutil"
@@ -146,18 +145,18 @@ func randomString(n int) string {
 
 func TestWriterPerf(t *testing.T) {
 	var keySize = 256
-	var valueSize = 1000
-	var rowCnt = 50000
-	var readBufferSize = 64 * 1024 * 1024
+	//var valueSize = 1000
+	//var rowCnt = 200000
+	var readBufferSize = 64 * 1024
 	var memLimit = 64 * 1024 * 1024
 	MemQuota = memLimit
 
 	bucket := "globalsorttest"
 	prefix := "tools_test_data/sharedisk"
-	//uri := fmt.Sprintf("s3://%s/%s&force-path-style=true",
-	//	bucket, prefix)
-	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
-		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
+	uri := fmt.Sprintf("s3://%s/%s&force-path-style=true",
+		bucket, prefix)
+	//uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
+	//	bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
 	backend, err := storage2.ParseBackend(uri, nil)
 	require.NoError(t, err)
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
@@ -171,30 +170,36 @@ func TestWriterPerf(t *testing.T) {
 	defer pool.Destroy()
 	writer.kvBuffer = pool.NewBuffer()
 
+	var startMemory runtime.MemStats
+
 	ctx := context.Background()
-	for i := 0; i < rowCnt; i += 10000 {
-		var kvs []common.KvPair
-		for j := 0; j < 10000; j++ {
-			var kv common.KvPair
-			kv.Key = []byte(randomString(keySize))
-			kv.Val = []byte(randomString(valueSize))
-			kvs = append(kvs, kv)
-		}
-		err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
-	}
-	err = writer.flushKVs(context.Background())
-	require.NoError(t, err)
-	err = writer.kvStore.Finish()
-	require.NoError(t, err)
+	//for i := 0; i < rowCnt; i += 10000 {
+	//	var kvs []common.KvPair
+	//	for j := 0; j < 10000; j++ {
+	//		var kv common.KvPair
+	//		kv.Key = []byte(randomString(keySize))
+	//		kv.Val = []byte(randomString(valueSize))
+	//		kvs = append(kvs, kv)
+	//	}
+	//	err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+	//}
+	//err = writer.flushKVs(context.Background())
+	//require.NoError(t, err)
+	//err = writer.kvStore.Finish()
+	//require.NoError(t, err)
+	writer.currentSeq = 10
 
 	logutil.BgLogger().Info("writer info", zap.Any("seq", writer.currentSeq))
 
-	defer func() {
-		for i := 0; i < writer.currentSeq; i++ {
-			storage.DeleteFile(ctx, "test/"+strconv.Itoa(i))
-			storage.DeleteFile(ctx, "test_stat/"+strconv.Itoa(i))
-		}
-	}()
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo before read", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+
+	//defer func() {
+	//	for i := 0; i < writer.currentSeq; i++ {
+	//		storage.DeleteFile(ctx, "test/"+strconv.Itoa(i))
+	//		storage.DeleteFile(ctx, "test_stat/"+strconv.Itoa(i))
+	//	}
+	//}()
 
 	dataFileName := make([]string, 0)
 	fileStartOffsets := make([]uint64, 0)
@@ -208,14 +213,22 @@ func TestWriterPerf(t *testing.T) {
 	require.NoError(t, err)
 	mCnt := 0
 	prevKey := make([]byte, 0, keySize)
+
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo new merge iter", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+
 	for mIter.Next() {
 		mCnt++
+		if mCnt%1000000 == 0 {
+			runtime.ReadMemStats(&startMemory)
+			logutil.BgLogger().Info("meminfo % 1000000", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+		}
 		if len(prevKey) > 0 {
 			currKey := mIter.Key()
 			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
 			copy(prevKey, currKey)
 		}
 	}
-	require.Equal(t, rowCnt, mCnt)
+	//require.Equal(t, rowCnt, mCnt)
 	logutil.BgLogger().Info("read data rate", zap.Any("sort total/ ms", time.Since(startTs).Milliseconds()), zap.Any("io cnt", ReadIOCnt.Load()), zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
 }

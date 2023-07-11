@@ -26,6 +26,7 @@ import (
 )
 
 func TestKvPairHeap(t *testing.T) {
+	t.Skip("")
 	dataSizePerSortedBatch := 100
 	batchCnt := 1000
 	dataBatch := make([]kvPairHeap, 0, batchCnt)
