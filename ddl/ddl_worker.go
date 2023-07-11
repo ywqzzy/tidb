@@ -229,6 +229,7 @@ func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 		}
 		task.err <- err
 		jobs += task.job.String() + "; "
+		logutil.BgLogger().Info("ywq test add batch job", zap.Duration("time", time.Since(startTime)))
 		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerAddDDLJob, task.job.Type.String(),
 			metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 	}
@@ -566,6 +567,7 @@ func jobNeedGC(job *model.Job) bool {
 func (w *worker) finishDDLJob(t *meta.Meta, job *model.Job) (err error) {
 	startTime := time.Now()
 	defer func() {
+		logutil.BgLogger().Info("ywq test finish ddl job", zap.Duration("finish time", time.Since(startTime)))
 		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerFinishDDLJob, job.Type.String(), metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 	}()
 
@@ -728,7 +730,7 @@ func (w *worker) HandleDDLJobTable(d *ddlCtx, job *model.Job) (int64, error) {
 	defer func() {
 		w.unlockSeqNum(err)
 	}()
-
+	startTime := time.Now()
 	err = w.sess.Begin()
 	if err != nil {
 		return 0, err
@@ -795,8 +797,8 @@ func (w *worker) HandleDDLJobTable(d *ddlCtx, job *model.Job) (int64, error) {
 		// Result in the retry duration is up to 2 * lease.
 		schemaVer = 0
 	}
-
 	err = w.registerMDLInfo(job, schemaVer)
+
 	if err != nil {
 		w.sess.Rollback()
 		d.unlockSchemaVersion(job.ID)
@@ -812,6 +814,7 @@ func (w *worker) HandleDDLJobTable(d *ddlCtx, job *model.Job) (int64, error) {
 	// reset the SQL digest to make topsql work right.
 	w.sess.GetSessionVars().StmtCtx.ResetSQLDigest(job.Query)
 	err = w.sess.Commit()
+	logutil.BgLogger().Info("ywq test txn time", zap.Duration("time", time.Since(startTime)), zap.Int32("worker id", w.id))
 	d.unlockSchemaVersion(job.ID)
 	if err != nil {
 		return 0, err
@@ -980,13 +983,15 @@ func (w *worker) runDDLJob(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, 
 	if job.Type != model.ActionMultiSchemaChange {
 		logutil.Logger(w.logCtx).Info("run DDL job", zap.String("category", "ddl"), zap.String("job", job.String()))
 	}
-	timeStart := time.Now()
+	startTime := time.Now()
 	if job.RealStartTS == 0 {
 		job.RealStartTS = t.StartTS
 	}
 	defer func() {
-		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerRunDDLJob, job.Type.String(), metrics.RetLabel(err)).Observe(time.Since(timeStart).Seconds())
+		logutil.BgLogger().Info("ywq test run job time", zap.Duration("worker run job time", time.Since(startTime)), zap.Int32("worker id", w.id))
+		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerRunDDLJob, job.Type.String(), metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 	}()
+	t1 := time.Now()
 	if job.IsFinished() {
 		logutil.Logger(w.logCtx).Debug("finish DDL job", zap.String("category", "ddl"), zap.String("job", job.String()))
 		return ver, err
@@ -1007,6 +1012,7 @@ func (w *worker) runDDLJob(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, 
 	if !job.IsRollingback() {
 		job.State = model.JobStateRunning
 	}
+	logutil.BgLogger().Info("ywq test before oncreate", zap.Duration("time", time.Since(t1)), zap.Int32("worker id", w.id))
 
 	// For every type, `schema/table` modification and `job` modification are conducted
 	// in the one kv transaction. The `schema/table` modification can be always discarded
@@ -1184,6 +1190,7 @@ func waitSchemaChanged(d *ddlCtx, waitTime time.Duration, latestSchemaVersion in
 	timeStart := time.Now()
 	var err error
 	defer func() {
+		logutil.BgLogger().Info("ywq test wait schema changed", zap.Duration("wait time", time.Since(timeStart)))
 		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerWaitSchemaChanged, job.Type.String(), metrics.RetLabel(err)).Observe(time.Since(timeStart).Seconds())
 	}()
 
@@ -1291,7 +1298,9 @@ func buildPlacementAffects(oldIDs []int64, newIDs []int64) []*model.AffectedOpti
 
 // updateSchemaVersion increments the schema version by 1 and sets SchemaDiff.
 func updateSchemaVersion(d *ddlCtx, t *meta.Meta, job *model.Job, multiInfos ...schemaIDAndTableInfo) (int64, error) {
+	startTime := time.Now()
 	schemaVersion, err := d.setSchemaVersion(job, d.store)
+	logutil.BgLogger().Info("ywq test set schema version", zap.Duration("time", time.Since(startTime)))
 	if err != nil {
 		return 0, errors.Trace(err)
 	}

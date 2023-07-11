@@ -85,7 +85,7 @@ const (
 	batchAddingJobs = 10
 
 	reorgWorkerCnt   = 10
-	generalWorkerCnt = 1
+	generalWorkerCnt = 10
 
 	// checkFlagIndexInJobArgs is the recoverCheckFlag index used in RecoverTable/RecoverSchema job arg list.
 	checkFlagIndexInJobArgs = 1
@@ -471,37 +471,6 @@ func (dc *ddlCtx) jobContext(jobID int64) *JobContext {
 		return jobContext
 	}
 	return NewJobContext()
-}
-
-func (dc *ddlCtx) removeBackfillCtxJobCtx(jobID int64) {
-	dc.backfillCtx.Lock()
-	delete(dc.backfillCtx.jobCtxMap, jobID)
-	dc.backfillCtx.Unlock()
-}
-
-func (dc *ddlCtx) backfillCtxJobIDs() []int64 {
-	dc.backfillCtx.Lock()
-	defer dc.backfillCtx.Unlock()
-
-	runningJobIDs := make([]int64, 0, len(dc.backfillCtx.jobCtxMap))
-	for id := range dc.backfillCtx.jobCtxMap {
-		runningJobIDs = append(runningJobIDs, id)
-	}
-	return runningJobIDs
-}
-
-func (dc *ddlCtx) setBackfillCtxJobContext(jobID int64, jobQuery string, jobType model.ActionType) (*JobContext, bool) {
-	dc.backfillCtx.Lock()
-	defer dc.backfillCtx.Unlock()
-
-	jobCtx, existent := dc.backfillCtx.jobCtxMap[jobID]
-	if !existent {
-		dc.setDDLLabelForTopSQL(jobID, jobQuery)
-		dc.setDDLSourceForDiagnosis(jobID, jobType)
-		jobCtx = dc.jobContext(jobID)
-		dc.backfillCtx.jobCtxMap[jobID] = jobCtx
-	}
-	return jobCtx, existent
 }
 
 type reorgContexts struct {
@@ -1084,6 +1053,7 @@ func (d *ddl) DoDDLJob(ctx sessionctx.Context, job *model.Job) error {
 	defer func() {
 		ticker.Stop()
 		metrics.JobsGauge.WithLabelValues(job.Type.String()).Dec()
+		logutil.BgLogger().Info("ywq test do ddl job time", zap.Duration("do ddl job time", time.Since(startTime)))
 		metrics.HandleJobHistogram.WithLabelValues(job.Type.String(), metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 		recordLastDDLInfo(ctx, historyJob)
 	}()

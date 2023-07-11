@@ -56,16 +56,20 @@ const tiflashCheckTiDBHTTPAPIHalfInterval = 2500 * time.Millisecond
 func createTable(d *ddlCtx, t *meta.Meta, job *model.Job, fkCheck bool) (*model.TableInfo, error) {
 	schemaID := job.SchemaID
 	tbInfo := job.Args[0].(*model.TableInfo)
-
+	startTime := time.Now()
 	tbInfo.State = model.StateNone
 	err := checkTableNotExists(d, t, schemaID, tbInfo.Name.L)
+	logutil.BgLogger().Info("ywq test create table internal check table not exists", zap.Duration("time", time.Since(startTime)))
+
 	if err != nil {
 		if infoschema.ErrDatabaseNotExists.Equal(err) || infoschema.ErrTableExists.Equal(err) {
 			job.State = model.JobStateCancelled
 		}
 		return tbInfo, errors.Trace(err)
 	}
+	startTime = time.Now()
 	retryable, err := checkTableForeignKeyValidInOwner(d, t, job, tbInfo, fkCheck)
+	logutil.BgLogger().Info("ywq test create table internal checkTableForeignKeyValidInOwner", zap.Duration("time", time.Since(startTime)))
 	if err != nil {
 		if !retryable {
 			job.State = model.JobStateCancelled
@@ -82,16 +86,19 @@ func createTable(d *ddlCtx, t *meta.Meta, job *model.Job, fkCheck bool) (*model.
 		// none -> public
 		tbInfo.State = model.StatePublic
 		tbInfo.UpdateTS = t.StartTS
+		startTime = time.Now()
 		err = createTableOrViewWithCheck(t, job, schemaID, tbInfo)
 		if err != nil {
 			return tbInfo, errors.Trace(err)
 		}
+		logutil.BgLogger().Info("ywq test create table internal createTableOrViewWithCheck", zap.Duration("time", time.Since(startTime)))
 
 		failpoint.Inject("checkOwnerCheckAllVersionsWaitTime", func(val failpoint.Value) {
 			if val.(bool) {
 				failpoint.Return(tbInfo, errors.New("mock create table error"))
 			}
 		})
+		startTime = time.Now()
 
 		// build table & partition bundles if any.
 		if err = checkAllTablePlacementPoliciesExistAndCancelNonExistJob(t, job, tbInfo); err != nil {
@@ -132,6 +139,7 @@ func createTable(d *ddlCtx, t *meta.Meta, job *model.Job, fkCheck bool) (*model.
 			job.State = model.JobStateCancelled
 			return tbInfo, errors.Wrapf(err, "failed to notify PD the placement rules")
 		}
+		logutil.BgLogger().Info("ywq test create table internal rule related", zap.Duration("time", time.Since(startTime)))
 
 		return tbInfo, nil
 	default:
@@ -140,6 +148,7 @@ func createTable(d *ddlCtx, t *meta.Meta, job *model.Job, fkCheck bool) (*model.
 }
 
 func onCreateTable(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error) {
+	startTime := time.Now()
 	failpoint.Inject("mockExceedErrorLimit", func(val failpoint.Value) {
 		if val.(bool) {
 			failpoint.Return(ver, errors.New("mock do job error"))
@@ -158,20 +167,30 @@ func onCreateTable(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error)
 	if len(tbInfo.ForeignKeys) > 0 {
 		return createTableWithForeignKeys(d, t, job, tbInfo, fkCheck)
 	}
+	logutil.BgLogger().Info("ywq test createTable decode args", zap.Duration("time", time.Since(startTime)))
 
+	startTime = time.Now()
+	logutil.BgLogger().Info("ywq test before createTable", zap.Duration("time", time.Since(startTime)))
+
+	startTime = time.Now()
 	tbInfo, err := createTable(d, t, job, fkCheck)
+	logutil.BgLogger().Info("ywq test createTable", zap.Duration("time", time.Since(startTime)))
+
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
-
+	startTime = time.Now()
 	ver, err = updateSchemaVersion(d, t, job)
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
-
+	logutil.BgLogger().Info("ywq test createTable update schema version", zap.Duration("time", time.Since(startTime)))
+	startTime = time.Now()
 	// Finish this job.
 	job.FinishTableJob(model.JobStateDone, model.StatePublic, ver, tbInfo)
 	asyncNotifyEvent(d, &util.Event{Tp: model.ActionCreateTable, TableInfo: tbInfo})
+	logutil.BgLogger().Info("ywq test createTable finish job", zap.Duration("time", time.Since(startTime)))
+
 	return ver, errors.Trace(err)
 }
 
@@ -1453,16 +1472,23 @@ func onUpdateFlashReplicaStatus(d *ddlCtx, t *meta.Meta, job *model.Job) (ver in
 
 func checkTableNotExists(d *ddlCtx, t *meta.Meta, schemaID int64, tableName string) error {
 	// Try to use memory schema info to check first.
-	currVer, err := t.GetSchemaVersion()
+	_, err := t.GetSchemaVersion()
 	if err != nil {
 		return err
 	}
 	is := d.infoCache.GetLatest()
-	if is.SchemaMetaVersion() == currVer {
-		return checkTableNotExistsFromInfoSchema(is, schemaID, tableName)
-	}
+	// if is.SchemaMetaVersion() == currVer {
+	startTime := time.Now()
+	err = checkTableNotExistsFromInfoSchema(is, schemaID, tableName)
+	logutil.BgLogger().Info("ywq test create table internal checkTableNotExists checkTableNotExistsFromInfoSchema", zap.Duration("time", time.Since(startTime)))
 
-	return checkTableNotExistsFromStore(t, schemaID, tableName)
+	return err
+	// }
+	// startTime := time.Now()
+	// err = checkTableNotExistsFromStore(t, schemaID, tableName)
+	// logutil.BgLogger().Info("ywq test create table internal checkTableNotExists checkTableNotExistsFromStore", zap.Duration("time", time.Since(startTime)))
+
+	// return err
 }
 
 func checkTableIDNotExists(t *meta.Meta, schemaID, tableID int64) error {

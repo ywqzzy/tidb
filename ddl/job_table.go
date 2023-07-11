@@ -352,6 +352,7 @@ func (d *ddl) loadDDLJobAndRun(se *sess.Session, pool *workerPool, getJob func(*
 		logutil.BgLogger().Debug(fmt.Sprintf("[ddl] no %v worker available now", pool.tp()), zap.Error(err))
 		return
 	}
+	startTime := time.Now()
 
 	d.mu.RLock()
 	d.mu.hook.OnGetJobBefore(pool.tp().String())
@@ -368,6 +369,7 @@ func (d *ddl) loadDDLJobAndRun(se *sess.Session, pool *workerPool, getJob func(*
 	d.mu.RLock()
 	d.mu.hook.OnGetJobAfter(pool.tp().String(), job)
 	d.mu.RUnlock()
+	logutil.BgLogger().Info("ywq test get job", zap.Duration("time", time.Since(startTime)))
 
 	d.delivery2worker(wk, pool, job)
 }
@@ -395,7 +397,9 @@ func (d *ddl) delivery2worker(wk *worker, pool *workerPool, job *model.Job) {
 				} else if exist {
 					// Release the worker resource.
 					pool.put(wk)
+					startTime := time.Now()
 					err = waitSchemaSyncedForMDL(d.ddlCtx, job, version)
+					logutil.BgLogger().Info("ywq test wait schema synced for mdl", zap.Duration("time", time.Since(startTime)))
 					if err != nil {
 						return
 					}
@@ -405,7 +409,10 @@ func (d *ddl) delivery2worker(wk *worker, pool *workerPool, job *model.Job) {
 					return
 				}
 			} else {
+				startTime := time.Now()
 				err := waitSchemaSynced(d.ddlCtx, job, 2*d.lease)
+				logutil.BgLogger().Info("ywq test wait schema synced", zap.Duration("time", time.Since(startTime)))
+
 				if err != nil {
 					logutil.BgLogger().Warn("wait ddl job sync failed", zap.String("category", "ddl"), zap.Error(err), zap.String("job", job.String()))
 					time.Sleep(time.Second)
