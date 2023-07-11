@@ -352,7 +352,7 @@ func (b *backfillSchedulerHandle) OnSubtaskFinished(ctx context.Context, meta []
 				return nil, err
 			}
 			subtaskMeta.MinKey, subtaskMeta.MaxKey = bc.GetMinMaxKey()
-			log.FromContext(ctx).Warn("get key boundary on subtask finished",
+			log.FromContext(ctx).Info("get key boundary on subtask finished",
 				zap.String("min", hex.EncodeToString(subtaskMeta.MinKey)),
 				zap.String("max", hex.EncodeToString(subtaskMeta.MaxKey)))
 			meta, err = json.Marshal(subtaskMeta)

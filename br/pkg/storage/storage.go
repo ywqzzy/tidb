@@ -242,3 +242,31 @@ func ReadPartialFileDirectly(ctx context.Context, storage ExternalStorage, name 
 	}
 	return uint64(readN), err
 }
+
+func ReloadBuffer(ctx context.Context, storage ExternalStorage, name string, start uint64, buffer []byte) (uint64, error) {
+	st, ok := storage.(*S3Storage)
+	if !ok {
+		return 0, errors.Annotate(berrors.ErrUnsupportedOperation, "only s3 storage can read partial file directly")
+	}
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(st.options.Bucket),
+		Key:    aws.String(st.options.Prefix + name),
+	}
+	input.Range = aws.String(fmt.Sprintf("bytes=%d-%d", start, len(buffer)-1))
+	result, err := st.svc.GetObjectWithContext(ctx, input)
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+	defer result.Body.Close()
+	readN := 0
+	b := buffer[0:]
+	for {
+		n, err := result.Body.Read(b)
+		readN += n
+		b = b[n:]
+		if err == io.EOF || n == 0 {
+			break
+		}
+	}
+	return uint64(readN), err
+}
