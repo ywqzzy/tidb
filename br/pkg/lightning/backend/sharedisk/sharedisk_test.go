@@ -166,7 +166,6 @@ func TestWriterPerf(t *testing.T) {
 
 	writer := NewWriter(context.Background(), storage, "test", 0, DummyOnCloseFunc)
 	writer.filenamePrefix = "test"
-	writeBufferSize = 1024
 
 	pool := membuf.NewPool()
 	defer pool.Destroy()
@@ -213,6 +212,7 @@ func TestWriterPerf(t *testing.T) {
 	startTs := time.Now()
 	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, readBufferSize)
 	require.NoError(t, err)
+	defer mIter.Close()
 	mCnt := 0
 	prevKey := make([]byte, 0, keySize)
 

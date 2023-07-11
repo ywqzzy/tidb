@@ -21,24 +21,18 @@ import (
 	"github.com/pingcap/tidb/br/pkg/storage"
 )
 
-var writeBufferSize = 8192 * 1024
-
 type KeyValueStore struct {
 	dataWriter storage.ExternalFileWriter
 	statWriter storage.ExternalFileWriter
 
-	rc           *RangePropertiesCollector
-	ctx          context.Context
-	writeBuffer  []byte
-	statBuffer   []byte
-	bufferOffset int
-	offset       uint64
-	keyCnt       uint64
+	rc     *RangePropertiesCollector
+	ctx    context.Context
+	offset uint64
+	keyCnt uint64
 }
 
 func Create(ctx context.Context, dataWriter, statWriter storage.ExternalFileWriter) (*KeyValueStore, error) {
 	kvStore := &KeyValueStore{dataWriter: dataWriter, statWriter: statWriter, ctx: ctx}
-	kvStore.writeBuffer = make([]byte, writeBufferSize)
 	return kvStore, nil
 }
 
@@ -74,7 +68,6 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 	}
 
 	s.rc.lastKey = key
-	s.bufferOffset += kvLen
 	s.offset += uint64(kvLen)
 	s.keyCnt++
 

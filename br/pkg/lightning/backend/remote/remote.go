@@ -1575,7 +1575,7 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 		zap.String("startKey", hex.EncodeToString(remote.startKey)),
 		zap.Strings("statsFiles", sharedisk.PrettyFileNames(remote.statsFiles)))
 
-	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage, 4096)
+	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage, 64*1024)
 	if err != nil {
 		return errors.Trace(err)
 	}

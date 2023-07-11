@@ -70,6 +70,10 @@ func (r *kvReader) nextKV() (key, val []byte, err error) {
 	return kBuf.get(), valBuf.get(), nil
 }
 
+func (r *kvReader) Close() error {
+	return r.byteReader.Close()
+}
+
 type statsReader struct {
 	byteReader *byteReader
 	propBytes  []byte
@@ -104,6 +108,10 @@ func (r *statsReader) nextProp() (*RangeProperty, error) {
 		return nil, err
 	}
 	return decodeProp(propBytes.get())
+}
+
+func (r *statsReader) Close() error {
+	return r.byteReader.Close()
 }
 
 func decodeProp(data []byte) (*RangeProperty, error) {
@@ -247,4 +255,8 @@ func (r *byteReader) reload() error {
 		r.buf = r.buf[:nBytes]
 	}
 	return nil
+}
+
+func (r *byteReader) Close() error {
+	return r.storageReader.Close()
 }

@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	sst "github.com/pingcap/kvproto/pkg/import_sstpb"
 	"github.com/pingcap/tidb/br/pkg/storage"
@@ -78,14 +80,31 @@ func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64
 		dataFilePaths:  paths,
 		lastFileOffset: -1,
 	}
-	it.dataFileReader = make([]*kvReader, 0, len(paths))
+	it.dataFileReader = make([]*kvReader, len(paths))
 	it.kvHeap = make([]*kvPair, 0, len(paths))
+
+	// Open all data files concurrently.
+	var wg sync.WaitGroup
+	wg.Add(len(paths))
+	var perr atomic.Pointer[error]
 	for i, path := range paths {
-		rd, err := newKVReader(ctx, path, exStorage, pathsStartOffset[i], readBufferSize)
-		if err != nil {
-			return nil, err
-		}
-		it.dataFileReader = append(it.dataFileReader, rd)
+		i := i
+		path := path
+		go func() {
+			rd, err := newKVReader(ctx, path, exStorage, pathsStartOffset[i], readBufferSize)
+			if err != nil {
+				perr.CompareAndSwap(nil, &err)
+			}
+			it.dataFileReader[i] = rd
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	if perr.Load() != nil {
+		return nil, *perr.Load()
+	}
+
+	for i, rd := range it.dataFileReader {
 		k, v, err := rd.nextKV()
 		if err != nil {
 			return nil, err
@@ -151,8 +170,13 @@ func (i *MergeIter) Value() []byte {
 	return i.currKV.value
 }
 
-func (i *MergeIter) Close() []byte {
-	return i.firstKey
+func (i *MergeIter) Close() error {
+	for _, rd := range i.dataFileReader {
+		if err := rd.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (i *MergeIter) OpType() sst.Pair_OP {

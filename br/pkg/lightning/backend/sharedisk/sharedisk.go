@@ -123,7 +123,7 @@ type Engine struct {
 }
 
 var WriteBatchSize = 8 * 1024
-var MemQuota = 8 * 1024
+var MemQuota = 1024 * 1024 * 1024
 
 type OnCloseFunc func(writerID int, seq int, min tidbkv.Key, max tidbkv.Key)
 
