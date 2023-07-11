@@ -18,12 +18,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"io"
+	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
@@ -33,6 +33,7 @@ import (
 	"github.com/pingcap/tidb/br/pkg/membuf"
 	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/keyspace"
+	tidbkv "github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
 	"go.uber.org/zap"
@@ -105,16 +106,6 @@ func (rc *RangePropertiesCollector) Encode() []byte {
 	return b
 }
 
-func Decode2RangeProperty(data []byte) (*RangeProperty, error) {
-	rp := &RangeProperty{}
-	keyLen := binary.BigEndian.Uint32(data[0:4])
-	rp.Key = data[4 : 4+keyLen]
-	rp.Size = binary.BigEndian.Uint64(data[4+keyLen : 12+keyLen])
-	rp.Keys = binary.BigEndian.Uint64(data[12+keyLen : 20+keyLen])
-	rp.offset = binary.BigEndian.Uint64(data[20+keyLen : 28+keyLen])
-	return rp, nil
-}
-
 func NewEngine(sizeDist, keyDist uint64) *Engine {
 	return &Engine{
 		rc: &RangePropertiesCollector{
@@ -134,8 +125,12 @@ type Engine struct {
 var WriteBatchSize = 8 * 1024
 var MemQuota = 8 * 1024
 
+type OnCloseFunc func(writerID int, seq int, min tidbkv.Key, max tidbkv.Key)
+
+func DummyOnCloseFunc(int, int, tidbkv.Key, tidbkv.Key) {}
+
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
-	prefix string, writerID int, onClose func(int, int)) *Writer {
+	prefix string, writerID int, onClose OnCloseFunc) *Writer {
 	// TODO(tangenta): make it configurable.
 	engine := NewEngine(2048, 256)
 	pool := membuf.NewPool()
@@ -175,224 +170,17 @@ type Writer struct {
 	batchSize  int
 
 	currentSeq int
-	onClose    func(writerID, currentSeq int)
+	onClose    OnCloseFunc
 	closed     bool
 
 	tikvCodec      tikv.Codec
 	filenamePrefix string
 	writerID       int
+	minKey         tidbkv.Key
+	maxKey         tidbkv.Key
 
 	kvStore *KeyValueStore
 }
-
-type DataFileReader struct {
-	ctx context.Context
-
-	name      string
-	exStorage storage.ExternalStorage
-	rsc       storage.ReadSeekCloser
-
-	fileMaxOffset uint64
-	readBuffer    []byte
-	readBuffer2   []byte
-	useBuffer2    bool
-	bufferMu      sync.Mutex
-
-	bufferMaxOffset   uint64
-	currKVStartOffset uint64
-	currBufferOffset  uint64
-	currFileOffset    uint64
-	kvBoundaryOffset  uint64
-}
-
-func (dr *DataFileReader) loadNewData() {
-	dr.bufferMu.Lock()
-}
-
-func (dr *DataFileReader) getMoreDataFromStorage() (bool, error) {
-	// Move the unread data to the beginning of the buffer.
-	unreadLen := len(dr.readBuffer) - int(dr.kvBoundaryOffset)
-	copy(dr.readBuffer, dr.readBuffer[int(dr.kvBoundaryOffset):])
-	startTime := time.Now()
-	nBytes, err := io.ReadFull(dr.rsc, dr.readBuffer[unreadLen:])
-	elapsed := time.Since(startTime).Microseconds()
-	ReadByteForTest.Add(uint64(nBytes))
-	ReadTimeForTest.Add(uint64(elapsed))
-	ReadIOCnt.Add(1)
-	if err == io.EOF {
-		return false, nil
-	} else if err != nil && err != io.ErrUnexpectedEOF {
-		return true, err
-	}
-	dr.bufferMaxOffset = uint64(nBytes) + uint64(unreadLen)
-	dr.currBufferOffset = 0
-	dr.currFileOffset = dr.currFileOffset + uint64(nBytes)
-	return true, nil
-}
-
-func (dr *DataFileReader) Open() error {
-	startTs := time.Now()
-	var err error
-	dr.rsc, err = dr.exStorage.Open(dr.ctx, dr.name)
-	if err != nil {
-		return err
-	}
-	dr.kvBoundaryOffset = uint64(len(dr.readBuffer))
-	logutil.BgLogger().Info("open", zap.Any("name", dr.name), zap.Any("elasp us", time.Since(startTs).Microseconds()))
-	return nil
-}
-
-func (dr *DataFileReader) Close() error {
-	return dr.rsc.Close()
-}
-
-func (dr *DataFileReader) GetNextKV() ([]byte, []byte, error) {
-	dr.kvBoundaryOffset = dr.currBufferOffset
-	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
-		get, err := dr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, nil, err
-		}
-		if !get {
-			return nil, nil, nil
-		}
-		return dr.GetNextKV()
-	}
-	keyLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
-	dr.currBufferOffset += 8
-
-	if dr.bufferMaxOffset < dr.currBufferOffset+keyLen {
-		_, err := dr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, nil, err
-		}
-		return dr.GetNextKV()
-	}
-	key := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+keyLen]
-	dr.currBufferOffset += keyLen
-
-	if dr.bufferMaxOffset < dr.currBufferOffset+8 {
-		_, err := dr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, nil, err
-		}
-		return dr.GetNextKV()
-	}
-	valLen := binary.BigEndian.Uint64(dr.readBuffer[dr.currBufferOffset:])
-	dr.currBufferOffset += 8
-
-	if dr.bufferMaxOffset < dr.currBufferOffset+valLen {
-		_, err := dr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, nil, err
-		}
-		return dr.GetNextKV()
-	}
-	val := dr.readBuffer[dr.currBufferOffset : dr.currBufferOffset+valLen]
-	dr.currBufferOffset += valLen
-	return key, val, nil
-}
-
-type statFileReader struct {
-	ctx context.Context
-
-	name      string
-	exStorage storage.ExternalStorage
-
-	fileMaxOffset    uint64
-	bufferMaxOffset  uint64
-	readBuffer       []byte
-	currBufferOffset uint64
-	currFileOffset   uint64
-	kvBoundaryOffset uint64
-	init             bool
-}
-
-func (sr *statFileReader) getMoreDataFromStorage() (bool, error) {
-	//logutil.BgLogger().Info("getMoreDataFromStorage")
-
-	start := sr.currFileOffset
-	end := sr.currFileOffset + sr.kvBoundaryOffset
-	if end > sr.fileMaxOffset {
-		end = sr.fileMaxOffset
-	}
-	if start == end {
-		return false, nil
-	}
-	// Move the unread data to the beginning of the buffer
-	unreadLen := len(sr.readBuffer) - int(sr.kvBoundaryOffset)
-	for i := 0; i < unreadLen; i++ {
-		sr.readBuffer[i] = sr.readBuffer[int(sr.kvBoundaryOffset)+i]
-	}
-	nBytes, err := storage.ReadPartialFileDirectly(sr.ctx, sr.exStorage, sr.name, start, end, sr.readBuffer[unreadLen:])
-	if err != nil {
-		return false, err
-	}
-	sr.bufferMaxOffset = nBytes + uint64(unreadLen)
-	sr.currBufferOffset = 0
-	sr.currFileOffset = sr.currFileOffset + nBytes
-	return true, nil
-}
-
-func (sr *statFileReader) GetNextProp() (*RangeProperty, error) {
-	if !sr.init {
-		maxOffset, err := storage.GetFileMaxOffset(sr.ctx, sr.exStorage, sr.name)
-		if err != nil {
-			return nil, err
-		}
-		sr.fileMaxOffset = maxOffset
-		sr.kvBoundaryOffset = uint64(len(sr.readBuffer))
-		get, err := sr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, err
-		}
-		if !get {
-			return nil, nil
-		}
-		sr.init = true
-	}
-	if sr.bufferMaxOffset < sr.currBufferOffset+4 {
-		get, err := sr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, err
-		}
-		if !get {
-			return nil, nil
-		}
-	}
-	propLen := binary.BigEndian.Uint32(sr.readBuffer[sr.currBufferOffset:])
-	sr.currBufferOffset += 4
-
-	if sr.bufferMaxOffset < sr.currBufferOffset+uint64(propLen) {
-		get, err := sr.getMoreDataFromStorage()
-		if err != nil {
-			return nil, err
-		}
-		if !get {
-			return nil, nil
-		}
-	}
-	propBytes := sr.readBuffer[sr.currBufferOffset : sr.currBufferOffset+uint64(propLen)]
-	sr.currBufferOffset += uint64(propLen)
-	return Decode2RangeProperty(propBytes)
-}
-
-//func openLocalWriter(cfg *backend.LocalWriterConfig) (*Writer, error) {
-//	w := &Writer{
-//		engine:             engine,
-//		memtableSizeLimit:  cacheSize,
-//		kvBuffer:           kvBuffer,
-//		isKVSorted:         cfg.IsKVSorted,
-//		tikvCodec:          tikvCodec,
-//	}
-//	// pre-allocate a long enough buffer to avoid a lot of runtime.growslice
-//	// this can help save about 3% of CPU.
-//	if !w.isKVSorted {
-//		w.writeBatch = make([]common.KvPair, units.MiB)
-//	}
-//	//engine.localWriters.Store(w, nil)
-//	return w, nil
-//}
 
 // AppendRows appends rows to the external storage.
 func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows encode.Rows) error {
@@ -440,9 +228,10 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if w.closed {
 		return status(true), nil
 	}
+	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
+		zap.String("minKey", hex.EncodeToString(w.minKey)), zap.String("maxKey", hex.EncodeToString(w.maxKey)))
 	w.closed = true
 	defer w.memBufPool.Destroy()
-	defer w.onClose(w.writerID, w.currentSeq)
 	err := w.flushKVs(ctx)
 	if err != nil {
 		return status(false), err
@@ -451,7 +240,17 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if err != nil {
 		return status(false), err
 	}
+	w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
 	return status(true), nil
+}
+
+func (w *Writer) recordMinMax(newMin, newMax tidbkv.Key) {
+	if len(w.minKey) == 0 || newMin.Cmp(w.minKey) < 0 {
+		w.minKey = newMin.Clone()
+	}
+	if len(w.maxKey) == 0 || newMax.Cmp(w.maxKey) > 0 {
+		w.maxKey = newMax.Clone()
+	}
 }
 
 type status bool
@@ -460,11 +259,39 @@ func (s status) Flushed() bool {
 	return bool(s)
 }
 
+func CheckDataCnt(file string, exStorage storage.ExternalStorage) error {
+	iter, err := NewMergeIter(context.Background(), []string{file}, []uint64{0}, exStorage, 4096)
+	if err != nil {
+		return err
+	}
+	var cnt int
+	var firstKey, lastKey tidbkv.Key
+	for iter.Next() {
+		cnt++
+		if len(firstKey) == 0 {
+			firstKey = iter.Key()
+			firstKey = firstKey.Clone()
+		}
+		lastKey = iter.Key()
+	}
+	lastKey = lastKey.Clone()
+	logutil.BgLogger().Info("check data cnt", zap.Int("cnt", cnt),
+		zap.Strings("name", PrettyFileNames([]string{file})),
+		zap.String("first", hex.EncodeToString(firstKey)), zap.String("last", hex.EncodeToString(lastKey)))
+	return iter.Error()
+}
+
 func (w *Writer) flushKVs(ctx context.Context) error {
 	dataWriter, statWriter, err := w.createStorageWriter()
 	if err != nil {
 		return err
 	}
+	//defer func() {
+	//	err := CheckDataCnt(filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq-1)), w.exStorage)
+	//	if err != nil {
+	//		logutil.BgLogger().Error("check data cnt failed", zap.Error(err))
+	//	}
+	//}()
 	defer func() {
 		dataWriter.Close(w.ctx)
 		statWriter.Close(w.ctx)
@@ -480,7 +307,6 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 
 	for i := 0; i < len(w.writeBatch); i++ {
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)
-		//logutil.BgLogger().Info("add key", zap.Any("key", w.writeBatch[i].Key), zap.Any("value", w.writeBatch[i].Val))
 		if err != nil {
 			return err
 		}
@@ -494,6 +320,9 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key)
+
 	w.engine.rc.reset()
 	return nil
 }
@@ -502,14 +331,23 @@ func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, storage.Exte
 	dataPath := filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq))
 	statPath := filepath.Join(w.filenamePrefix+"_stat", strconv.Itoa(w.currentSeq))
 	dataWriter, err := w.exStorage.Create(w.ctx, dataPath)
-	logutil.BgLogger().Info("new data writer", zap.Any("name", dataPath))
+	logutil.BgLogger().Debug("new data writer", zap.Any("name", dataPath))
 	if err != nil {
 		return nil, nil, err
 	}
 	statWriter, err := w.exStorage.Create(w.ctx, statPath)
-	logutil.BgLogger().Info("new stat writer", zap.Any("name", statPath))
+	logutil.BgLogger().Debug("new stat writer", zap.Any("name", statPath))
 	if err != nil {
 		return nil, nil, err
 	}
 	return dataWriter, statWriter, nil
+}
+
+func PrettyFileNames(files []string) []string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		dir, file := filepath.Split(f)
+		names = append(names, fmt.Sprintf("%s/%s", filepath.Base(dir), file))
+	}
+	return names
 }

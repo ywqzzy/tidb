@@ -201,11 +201,15 @@ func (*litBackfillFlowHandle) IsRetryableErr(error) bool {
 
 func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHandle dispatcher.TaskHandle,
 	gTask *proto.Task, bc *remote.Backend) ([][]byte, error) {
+	firstKey, lastKey, err := getMinMaxKeyFromLastStep(taskHandle, gTask.ID)
+	if err != nil {
+		return nil, err
+	}
 	instanceIDs, err := taskHandle.GetAllSchedulerIDs(ctx, h, gTask)
 	if err != nil {
 		return nil, err
 	}
-	splitter, err := bc.GetRangeSplitter(ctx, len(instanceIDs)+5)
+	splitter, err := bc.GetRangeSplitter(ctx, len(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -213,21 +217,21 @@ func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHand
 		return nil, nil
 	}
 	metaArr := make([][]byte, 0, 16)
-	startKey, err := splitter.FirstStartKey(ctx)
-	var endKey []byte
-	var exit bool
+	startKey := firstKey
+	var endKey kv.Key
 	for {
-		splitKey, dataFiles, statsFiles, err := splitter.SplitOne(ctx)
+		splitKey, dataFiles, statsFiles, err := splitter.SplitOne()
 		if err != nil {
 			return nil, err
 		}
 		if len(splitKey) == 0 {
-			return metaArr, nil
+			endKey = lastKey
+		} else {
+			endKey = splitKey.Clone()
 		}
-		endKey = splitKey.Clone()
 		logutil.BgLogger().Info("split subtask range",
 			zap.String("startKey", hex.EncodeToString(startKey)), zap.String("endKey", hex.EncodeToString(endKey)))
-		if kv.Key(startKey).Cmp(endKey) >= 0 {
+		if startKey.Cmp(endKey) >= 0 {
 			return nil, errors.Errorf("invalid range, startKey: %s, endKey: %s", hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 		}
 		m := &BackfillSubTaskMeta{
@@ -241,9 +245,31 @@ func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHand
 			return nil, err
 		}
 		metaArr = append(metaArr, metaBytes)
-		if exit {
+		if len(splitKey) == 0 {
 			return metaArr, nil
 		}
 		startKey = endKey
 	}
+}
+
+func getMinMaxKeyFromLastStep(taskHandle dispatcher.TaskHandle, gTaskID int64) (min, max kv.Key, err error) {
+	subTaskMetas, err := taskHandle.GetPreviousSubtaskMetas(gTaskID, proto.StepOne)
+	if err != nil {
+		return nil, nil, errors.Trace(err)
+	}
+	var minKey, maxKey kv.Key
+	for _, subTaskMeta := range subTaskMetas {
+		var subtask BackfillSubTaskMeta
+		err := json.Unmarshal(subTaskMeta, &subtask)
+		if err != nil {
+			return nil, nil, errors.Trace(err)
+		}
+		if len(minKey) == 0 || kv.Key(subtask.MinKey).Cmp(minKey) < 0 {
+			minKey = subtask.MinKey
+		}
+		if len(maxKey) == 0 || kv.Key(subtask.MaxKey).Cmp(maxKey) > 0 {
+			maxKey = subtask.MaxKey
+		}
+	}
+	return minKey, maxKey, nil
 }

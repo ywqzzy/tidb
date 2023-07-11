@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
+	"github.com/pingcap/tidb/br/pkg/lightning/log"
 	"github.com/pingcap/tidb/ddl/ingest"
 	ddlutil "github.com/pingcap/tidb/ddl/util"
 	"github.com/pingcap/tidb/disttask/framework/proto"
@@ -73,6 +74,8 @@ type BackfillSubTaskMeta struct {
 	EndKey          []byte   `json:"end_key"`
 	DataFiles       []string `json:"data_files"`
 	StatsFiles      []string `json:"stats_files"`
+	MinKey          []byte   `json:"min_key"`
+	MaxKey          []byte   `json:"max_key"`
 }
 
 // NewBackfillSchedulerHandle creates a new backfill scheduler.
@@ -334,13 +337,31 @@ func (b *backfillSchedulerHandle) orderedImport(ctx context.Context, subtask []b
 }
 
 // OnSubtaskFinished implements the Scheduler interface.
-func (*backfillSchedulerHandle) OnSubtaskFinished(_ context.Context, meta []byte) ([]byte, error) {
+func (b *backfillSchedulerHandle) OnSubtaskFinished(ctx context.Context, meta []byte) ([]byte, error) {
 	failpoint.Inject("mockDMLExecutionAddIndexSubTaskFinish", func(val failpoint.Value) {
 		//nolint:forcetypeassert
 		if val.(bool) && MockDMLExecutionAddIndexSubTaskFinish != nil {
 			MockDMLExecutionAddIndexSubTaskFinish()
 		}
 	})
+	if bcCtx, ok := ingest.LitBackCtxMgr.Load(b.job.ID); ok {
+		if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
+			var subtaskMeta BackfillSubTaskMeta
+			err := json.Unmarshal(meta, &subtaskMeta)
+			if err != nil {
+				return nil, err
+			}
+			subtaskMeta.MinKey, subtaskMeta.MaxKey = bc.GetMinMaxKey()
+			log.FromContext(ctx).Info("get key boundary on subtask finished",
+				zap.String("min", hex.EncodeToString(subtaskMeta.MinKey)),
+				zap.String("max", hex.EncodeToString(subtaskMeta.MaxKey)))
+			meta, err = json.Marshal(subtaskMeta)
+			if err != nil {
+				return nil, err
+			}
+			return meta, nil
+		}
+	}
 	return meta, nil
 }
 
