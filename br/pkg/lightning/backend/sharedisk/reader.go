@@ -44,12 +44,13 @@ func (r *kvReader) nextKV() (key, val []byte, err error) {
 	if r.byteReader.eof() {
 		return nil, nil, nil
 	}
+	r.byteReader.reset()
 	lenBuf, err := r.byteReader.sliceNext(8)
 	if err != nil {
 		return nil, nil, err
 	}
-	keyLen := int(binary.BigEndian.Uint64(lenBuf))
-	key, err = r.byteReader.sliceNext(keyLen)
+	keyLen := int(binary.BigEndian.Uint64(lenBuf.get()))
+	kBuf, err := r.byteReader.sliceNext(keyLen)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -57,12 +58,12 @@ func (r *kvReader) nextKV() (key, val []byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	valLen := int(binary.BigEndian.Uint64(lenBuf))
-	val, err = r.byteReader.sliceNext(valLen)
+	valLen := int(binary.BigEndian.Uint64(lenBuf.get()))
+	valBuf, err := r.byteReader.sliceNext(valLen)
 	if err != nil {
 		return nil, nil, err
 	}
-	return key, val, nil
+	return kBuf.get(), valBuf.get(), nil
 }
 
 type statsReader struct {
@@ -85,11 +86,12 @@ func (r *statsReader) nextProp() (*RangeProperty, error) {
 	if r.byteReader.eof() {
 		return nil, nil
 	}
+	r.byteReader.reset()
 	lenBuf, err := r.byteReader.sliceNext(4)
 	if err != nil {
 		return nil, err
 	}
-	propLen := int(binary.BigEndian.Uint32(lenBuf[:]))
+	propLen := int(binary.BigEndian.Uint32(lenBuf.get()))
 	if cap(r.propBytes) < int(propLen) {
 		r.propBytes = make([]byte, propLen)
 	}
@@ -97,7 +99,7 @@ func (r *statsReader) nextProp() (*RangeProperty, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeProp(propBytes)
+	return decodeProp(propBytes.get())
 }
 
 func decodeProp(data []byte) (*RangeProperty, error) {
@@ -121,7 +123,8 @@ type byteReader struct {
 	fileStart uint64
 	fileMax   uint64
 
-	auxBuf []byte
+	auxBuf   []byte
+	cowSlice [][]byte
 
 	//prefetchInfo *prefetchInfo
 }
@@ -144,13 +147,32 @@ func newByteReader(ctx context.Context, store storage.ExternalStorage, name stri
 	return br, err
 }
 
+type slice interface {
+	get() []byte
+}
+
+type commonSlice []byte
+
+func (c commonSlice) get() []byte {
+	return c
+}
+
+type lazySlice struct {
+	cowIdx     int
+	byteReader *byteReader
+}
+
+func (s lazySlice) get() []byte {
+	return s.byteReader.cowSlice[s.cowIdx]
+}
+
 // sliceNext reads the next n bytes from the reader and returns a buffer slice containing those bytes.
 // If the reader has fewer than n bytes remaining in current buffer, `auxBuf` is used as a container instead.
-func (r *byteReader) sliceNext(n int) ([]byte, error) {
+func (r *byteReader) sliceNext(n int) (slice, error) {
 	b := r.next(n)
 	readLen := len(b)
 	if readLen == n {
-		return b, nil
+		return mkLazySlice(r, b), nil
 	}
 	if cap(r.auxBuf) < n {
 		r.auxBuf = make([]byte, n)
@@ -158,6 +180,7 @@ func (r *byteReader) sliceNext(n int) ([]byte, error) {
 	r.auxBuf = r.auxBuf[:n]
 	copy(r.auxBuf, b)
 	for readLen < n {
+		r.cloneSlices()
 		err := r.reload()
 		if err != nil {
 			return nil, err
@@ -166,7 +189,25 @@ func (r *byteReader) sliceNext(n int) ([]byte, error) {
 		copy(r.auxBuf[readLen:], b)
 		readLen += len(b)
 	}
-	return r.auxBuf, nil
+	return commonSlice(r.auxBuf), nil
+}
+
+func mkLazySlice(r *byteReader, s []byte) lazySlice {
+	r.cowSlice = append(r.cowSlice, s)
+	return lazySlice{
+		cowIdx:     len(r.cowSlice) - 1,
+		byteReader: r,
+	}
+}
+
+func (r *byteReader) reset() {
+	r.cowSlice = r.cowSlice[:0]
+}
+
+func (r *byteReader) cloneSlices() {
+	for i := range r.cowSlice {
+		r.cowSlice[i] = append([]byte(nil), r.cowSlice[i]...)
+	}
 }
 
 func (r *byteReader) eof() bool {
