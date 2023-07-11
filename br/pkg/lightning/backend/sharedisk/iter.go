@@ -62,7 +62,7 @@ type MergeIter struct {
 	startKey       []byte
 	endKey         []byte
 	dataFilePaths  []string
-	dataFileReader []*DataFileReader
+	dataFileReader []*kvReader
 	exStorage      storage.ExternalStorage
 	kvHeap         kvPairHeap
 	currKV         *kvPair
@@ -73,18 +73,20 @@ type MergeIter struct {
 	err error
 }
 
-func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64, exStorage storage.ExternalStorage, readBufferSuze uint64) (*MergeIter, error) {
+func NewMergeIter(ctx context.Context, paths []string, pathsStartOffset []uint64, exStorage storage.ExternalStorage, readBufferSize int) (*MergeIter, error) {
 	it := &MergeIter{
 		dataFilePaths:  paths,
 		lastFileOffset: -1,
 	}
-	it.dataFileReader = make([]*DataFileReader, 0, len(paths))
+	it.dataFileReader = make([]*kvReader, 0, len(paths))
 	it.kvHeap = make([]*kvPair, 0, len(paths))
 	for i, path := range paths {
-		rd := DataFileReader{ctx: ctx, name: path, exStorage: exStorage, currFileOffset: pathsStartOffset[i]}
-		rd.readBuffer = make([]byte, readBufferSuze)
-		it.dataFileReader = append(it.dataFileReader, &rd)
-		k, v, err := rd.GetNextKV()
+		rd, err := newKVReader(ctx, path, exStorage, pathsStartOffset[i], readBufferSize)
+		if err != nil {
+			return nil, err
+		}
+		it.dataFileReader = append(it.dataFileReader, rd)
+		k, v, err := rd.nextKV()
 		if err != nil {
 			return nil, err
 		}
@@ -124,7 +126,7 @@ func (i *MergeIter) Valid() bool {
 func (i *MergeIter) Next() bool {
 	// Populate the heap.
 	if i.lastFileOffset >= 0 {
-		k, v, err := i.dataFileReader[i.lastFileOffset].GetNextKV()
+		k, v, err := i.dataFileReader[i.lastFileOffset].nextKV()
 		if err != nil {
 			i.err = err
 			return false
@@ -200,7 +202,7 @@ type MergePropIter struct {
 	startKey       []byte
 	endKey         []byte
 	statFilePaths  []string
-	statFileReader []*statFileReader
+	statFileReader []*statsReader
 	propHeap       propHeap
 	currProp       *prop
 
@@ -217,10 +219,12 @@ func NewMergePropIter(ctx context.Context, paths []string, exStorage storage.Ext
 	}
 	it.propHeap = make([]*prop, 0, len(paths))
 	for i, path := range paths {
-		rd := statFileReader{ctx: ctx, name: path, exStorage: exStorage}
-		rd.readBuffer = make([]byte, 4096)
-		it.statFileReader = append(it.statFileReader, &rd)
-		p, err := rd.GetNextProp()
+		rd, err := newStatsReader(ctx, exStorage, path, 4096)
+		if err != nil {
+			return nil, err
+		}
+		it.statFileReader = append(it.statFileReader, rd)
+		p, err := rd.nextProp()
 		if err != nil {
 			return nil, err
 		}
@@ -271,7 +275,7 @@ func (i *MergePropIter) Valid() bool {
 
 func (i *MergePropIter) Next() bool {
 	if i.lastFileIdx >= 0 {
-		p, err := i.statFileReader[i.lastFileIdx].GetNextProp()
+		p, err := i.statFileReader[i.lastFileIdx].nextProp()
 		if err != nil {
 			i.err = err
 			return false

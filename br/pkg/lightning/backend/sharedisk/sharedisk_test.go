@@ -42,7 +42,9 @@ func TestWriter(t *testing.T) {
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "test", 0, func(int, int) {})
+	MemQuota = 32 * 32 * 1024
+
+	writer := NewWriter(context.Background(), storage, "test", 0, DummyOnCloseFunc)
 	writer.filenamePrefix = "test"
 	writeBufferSize = 1024
 
@@ -83,11 +85,10 @@ func TestWriter(t *testing.T) {
 
 	i := 0
 	for _, fileName := range []string{"test/0", "test/1", "test/2"} {
-		dataReader := DataFileReader{ctx: ctx, name: fileName, exStorage: storage}
-		dataReader.readBuffer = make([]byte, 4096)
-
+		dataReader, err := newKVReader(ctx, fileName, storage, 0, 4096)
+		require.NoError(t, err)
 		for {
-			k, v, err := dataReader.GetNextKV()
+			k, v, err := dataReader.nextKV()
 			require.NoError(t, err)
 			if k == nil && v == nil {
 				break
@@ -100,12 +101,12 @@ func TestWriter(t *testing.T) {
 
 	require.Equal(t, 20000, i)
 
-	statReader := statFileReader{ctx: ctx, name: "test_stat/2", exStorage: storage}
-	statReader.readBuffer = make([]byte, 4096)
+	statReader, err := newStatsReader(ctx, storage, "test_stat/2", 4096)
+	require.NoError(t, err)
 
 	j := 0
 	for {
-		prop, err := statReader.GetNextProp()
+		prop, err := statReader.nextProp()
 		require.NoError(t, err)
 		if prop == nil {
 			break
@@ -161,7 +162,7 @@ func TestWriterPerf(t *testing.T) {
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "test", 0, func(int, int) {})
+	writer := NewWriter(context.Background(), storage, "test", 0, DummyOnCloseFunc)
 	writer.filenamePrefix = "test"
 	writeBufferSize = 1024
 
@@ -200,7 +201,7 @@ func TestWriterPerf(t *testing.T) {
 		dataFileName = append(dataFileName, "test/"+strconv.Itoa(i))
 		fileStartOffsets = append(fileStartOffsets, 0)
 	}
-	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, uint64(readBufferSize))
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, readBufferSize)
 	require.NoError(t, err)
 	mCnt := 0
 	prevKey := make([]byte, 0, keySize)

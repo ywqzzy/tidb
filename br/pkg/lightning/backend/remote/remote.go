@@ -323,6 +323,8 @@ func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriter
 	onClose := func(writerID, currentSeq int, min, max kv.Key) {
 		remote.saveWriterSeq(writerID, currentSeq)
 		remote.recordMinMax(min, max)
+		log.FromContext(ctx).Info("record boundary key on close", zap.Int("writerID", writerID),
+			zap.String("min", hex.EncodeToString(min)), zap.String("max", hex.EncodeToString(max)))
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
 	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
@@ -1583,13 +1585,13 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 
 	var remainingStartKey []byte
 	for iter.Next() {
-		//readableKey := hex.EncodeToString(iter.Key())
-		//_, _, vals, err := tablecodec.DecodeIndexKey(iter.Key())
-		//log.FromContext(ctx).Info("iter", zap.String("key", readableKey), zap.String("colVal", vals[0]), zap.Error(err))
 		key := kv.Key(iter.Key())
 		if key.Cmp(remote.startKey) < 0 || key.Cmp(remote.endKey) > 0 {
 			continue
 		}
+		//readableKey := hex.EncodeToString(iter.Key())
+		//_, _, vals, err := tablecodec.DecodeIndexKey(iter.Key())
+		//log.FromContext(ctx).Info("iter", zap.String("key", readableKey), zap.String("colVal", vals[0]), zap.Error(err))
 		kvSize := int64(len(iter.Key()) + len(iter.Value()))
 		// here we reuse the `*sst.Pair`s to optimize object allocation
 		if count < len(pairs) {
