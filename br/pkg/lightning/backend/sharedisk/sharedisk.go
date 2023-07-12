@@ -124,6 +124,8 @@ type Engine struct {
 
 var WriteBatchSize = 8 * 1024
 var MemQuota = 1024 * 1024 * 1024
+var SizeDist = 1024 * 1024
+var KeyDist = 8 * 1024
 
 type OnCloseFunc func(writerID int, seq int, min tidbkv.Key, max tidbkv.Key)
 
@@ -132,7 +134,7 @@ func DummyOnCloseFunc(int, int, tidbkv.Key, tidbkv.Key) {}
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, onClose OnCloseFunc) *Writer {
 	// TODO(tangenta): make it configurable.
-	engine := NewEngine(2048, 256)
+	engine := NewEngine(uint64(SizeDist), uint64(KeyDist))
 	pool := membuf.NewPool()
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
 	return &Writer{
@@ -236,10 +238,24 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if err != nil {
 		return status(false), err
 	}
+
+	// Write the stat information to the storage.
+	statPath := filepath.Join(w.filenamePrefix, "stat")
+	stat, err := w.exStorage.Create(w.ctx, statPath)
+	_, err = stat.Write(w.ctx, w.kvStore.rc.Encode())
+	if err != nil {
+		return status(false), err
+	}
+	err = stat.Close(w.ctx)
+	if err != nil {
+		return status(false), err
+	}
+
 	err = w.kvStore.Finish()
 	if err != nil {
 		return status(false), err
 	}
+
 	w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
 	return status(true), nil
 }
@@ -282,19 +298,13 @@ func CheckDataCnt(file string, exStorage storage.ExternalStorage) error {
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {
-	dataWriter, statWriter, err := w.createStorageWriter()
+	dataWriter, err := w.createStorageWriter()
 	if err != nil {
 		return err
 	}
-	//defer func() {
-	//	err := CheckDataCnt(filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq-1)), w.exStorage)
-	//	if err != nil {
-	//		logutil.BgLogger().Error("check data cnt failed", zap.Error(err))
-	//	}
-	//}()
+
 	defer func() {
 		dataWriter.Close(w.ctx)
-		statWriter.Close(w.ctx)
 	}()
 	w.currentSeq++
 
@@ -302,7 +312,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 		return bytes.Compare(i.Key, j.Key) < 0
 	})
 
-	w.kvStore, err = Create(w.ctx, dataWriter, statWriter)
+	w.kvStore, err = Create(w.ctx, dataWriter)
 	w.kvStore.rc = w.engine.rc
 
 	for i := 0; i < len(w.writeBatch); i++ {
@@ -312,35 +322,30 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 		}
 	}
 
-	if w.engine.rc.currProp.Keys > 0 {
-		newProp := *w.engine.rc.currProp
-		w.engine.rc.props = append(w.engine.rc.props, &newProp)
-	}
-	_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
-	if err != nil {
-		return err
-	}
+	//if w.engine.rc.currProp.Keys > 0 {
+	//	newProp := *w.engine.rc.currProp
+	//	w.engine.rc.props = append(w.engine.rc.props, &newProp)
+	//}
+	//_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
+	//if err != nil {
+	//	return err
+	//}
 
 	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key)
 
-	w.engine.rc.reset()
+	//w.engine.rc.reset()
 	return nil
 }
 
-func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, storage.ExternalFileWriter, error) {
+func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, error) {
 	dataPath := filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq))
-	statPath := filepath.Join(w.filenamePrefix+"_stat", strconv.Itoa(w.currentSeq))
 	dataWriter, err := w.exStorage.Create(w.ctx, dataPath)
 	logutil.BgLogger().Debug("new data writer", zap.Any("name", dataPath))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	statWriter, err := w.exStorage.Create(w.ctx, statPath)
-	logutil.BgLogger().Debug("new stat writer", zap.Any("name", statPath))
-	if err != nil {
-		return nil, nil, err
-	}
-	return dataWriter, statWriter, nil
+
+	return dataWriter, nil
 }
 
 func PrettyFileNames(files []string) []string {

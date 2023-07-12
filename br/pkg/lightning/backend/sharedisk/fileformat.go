@@ -23,7 +23,6 @@ import (
 
 type KeyValueStore struct {
 	dataWriter storage.ExternalFileWriter
-	statWriter storage.ExternalFileWriter
 
 	rc     *RangePropertiesCollector
 	ctx    context.Context
@@ -31,8 +30,8 @@ type KeyValueStore struct {
 	keyCnt uint64
 }
 
-func Create(ctx context.Context, dataWriter, statWriter storage.ExternalFileWriter) (*KeyValueStore, error) {
-	kvStore := &KeyValueStore{dataWriter: dataWriter, statWriter: statWriter, ctx: ctx}
+func Create(ctx context.Context, dataWriter storage.ExternalFileWriter) (*KeyValueStore, error) {
+	kvStore := &KeyValueStore{dataWriter: dataWriter, ctx: ctx}
 	return kvStore, nil
 }
 

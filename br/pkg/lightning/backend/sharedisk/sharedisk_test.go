@@ -148,7 +148,7 @@ func randomString(n int) string {
 func TestWriterPerf(t *testing.T) {
 	var keySize = 256
 	var valueSize = 1000
-	var rowCnt = 200000
+	var rowCnt = 2000000
 	var readBufferSize = 64 * 1024
 	var memLimit = 64 * 1024 * 1024
 	MemQuota = memLimit
@@ -159,6 +159,9 @@ func TestWriterPerf(t *testing.T) {
 	//	bucket, prefix)
 	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
 		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
+
+	ctx := context.Background()
+
 	backend, err := storage2.ParseBackend(uri, nil)
 	require.NoError(t, err)
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
@@ -170,10 +173,10 @@ func TestWriterPerf(t *testing.T) {
 	pool := membuf.NewPool()
 	defer pool.Destroy()
 	writer.kvBuffer = pool.NewBuffer()
+	defer writer.Close(ctx)
 
 	var startMemory runtime.MemStats
 
-	ctx := context.Background()
 	for i := 0; i < rowCnt; i += 10000 {
 		var kvs []common.KvPair
 		for j := 0; j < 10000; j++ {
@@ -188,19 +191,19 @@ func TestWriterPerf(t *testing.T) {
 	require.NoError(t, err)
 	err = writer.kvStore.Finish()
 	require.NoError(t, err)
-	//writer.currentSeq = 10
+	//writer.currentSeq = 100
 
 	logutil.BgLogger().Info("writer info", zap.Any("seq", writer.currentSeq))
 
 	runtime.ReadMemStats(&startMemory)
 	logutil.BgLogger().Info("meminfo before read", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
 
-	defer func() {
-		for i := 0; i < writer.currentSeq; i++ {
-			storage.DeleteFile(ctx, "test/"+strconv.Itoa(i))
-			storage.DeleteFile(ctx, "test_stat/"+strconv.Itoa(i))
-		}
-	}()
+	//defer func() {
+	//	for i := 0; i < writer.currentSeq; i++ {
+	//		storage.DeleteFile(ctx, "test/"+strconv.Itoa(i))
+	//		storage.DeleteFile(ctx, "test_stat/"+strconv.Itoa(i))
+	//	}
+	//}()
 
 	dataFileName := make([]string, 0)
 	fileStartOffsets := make([]uint64, 0)
@@ -231,6 +234,7 @@ func TestWriterPerf(t *testing.T) {
 			copy(prevKey, currKey)
 		}
 	}
+
 	require.Equal(t, rowCnt, mCnt)
 	logutil.BgLogger().Info("read data rate", zap.Any("sort total/ ms", time.Since(startTs).Milliseconds()), zap.Any("io cnt", ReadIOCnt.Load()), zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
 }
