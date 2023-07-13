@@ -150,6 +150,7 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 			writers     []backend.EngineWriter
 			minKey      kv.Key
 			maxKey      kv.Key
+			totalSize   uint64
 		}{
 			writersSeq: map[int]int{},
 			writers:    make([]backend.EngineWriter, 0, 4),
@@ -180,6 +181,7 @@ type Backend struct {
 		writers     []backend.EngineWriter
 		minKey      kv.Key
 		maxKey      kv.Key
+		totalSize   uint64
 	}
 	pdCtl *pdutil.PdController
 	tls   *common.TLS
@@ -320,11 +322,13 @@ func (remote *Backend) ResetEngine(ctx context.Context, engineUUID uuid.UUID) er
 }
 
 func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriterConfig, engineUUID uuid.UUID) (backend.EngineWriter, error) {
-	onClose := func(writerID, currentSeq int, min, max kv.Key) {
-		remote.saveWriterSeq(writerID, currentSeq)
-		remote.recordMinMax(min, max)
-		log.FromContext(ctx).Info("record boundary key on close", zap.Int("writerID", writerID),
-			zap.String("min", hex.EncodeToString(min)), zap.String("max", hex.EncodeToString(max)))
+	onClose := func(s *sharedisk.WriterSummary) {
+		remote.handleWriterSummary(s)
+		log.FromContext(ctx).Info("record boundary key on close",
+			zap.Int("writerID", s.WriterID),
+			zap.String("min", hex.EncodeToString(s.Min)),
+			zap.String("max", hex.EncodeToString(s.Max)),
+			zap.Uint64("totalSize", s.TotalSize))
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
 	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
@@ -342,34 +346,31 @@ func (remote *Backend) allocWriterID() int {
 	return seq
 }
 
-// saveWriterSeq stores the current writer sequence for the given writer so that
-// we can remove the correct file in external storage when cleaning up.
-func (remote *Backend) saveWriterSeq(writerID int, currentSeq int) {
+func (remote *Backend) handleWriterSummary(s *sharedisk.WriterSummary) {
 	remote.mu.Lock()
 	defer remote.mu.Unlock()
-	remote.mu.writersSeq[writerID] = currentSeq
+	// Store the current writer sequence for the given writer so that
+	// we can remove the correct file in external storage when cleaning up.
+	remote.mu.writersSeq[s.WriterID] = s.Seq
+	if remote.mu.minKey == nil || s.Min.Cmp(remote.mu.minKey) < 0 {
+		remote.mu.minKey = s.Min
+	}
+	if remote.mu.maxKey == nil || s.Max.Cmp(remote.mu.maxKey) > 0 {
+		remote.mu.maxKey = s.Max
+	}
+	remote.mu.totalSize += s.TotalSize
 }
 
-func (remote *Backend) recordMinMax(min, max kv.Key) {
+func (remote *Backend) GetSummary() (min, max kv.Key, totalSize uint64) {
 	remote.mu.Lock()
 	defer remote.mu.Unlock()
-	if remote.mu.minKey == nil || min.Cmp(remote.mu.minKey) < 0 {
-		remote.mu.minKey = min
-	}
-	if remote.mu.maxKey == nil || max.Cmp(remote.mu.maxKey) > 0 {
-		remote.mu.maxKey = max
-	}
-}
-
-func (remote *Backend) GetMinMaxKey() (min, max kv.Key) {
-	remote.mu.Lock()
-	defer remote.mu.Unlock()
-	return remote.mu.minKey, remote.mu.maxKey
+	return remote.mu.minKey, remote.mu.maxKey, remote.mu.totalSize
 }
 
 // GetRangeSplitter returns a RangeSplitter that can be used to split the range into multiple subtasks.
-func (remote *Backend) GetRangeSplitter(ctx context.Context, instanceCnt int) (*sharedisk.RangeSplitter, error) {
-	dataFiles, statsFiles, err := remote.getAllFileNames(ctx)
+func (remote *Backend) GetRangeSplitter(ctx context.Context, totalKVSize uint64, instanceCnt int) (*sharedisk.RangeSplitter, error) {
+	subDir := strconv.Itoa(int(remote.jobID))
+	dataFiles, statsFiles, err := sharedisk.GetAllFileNames(ctx, remote.externalStorage, subDir)
 	if err != nil {
 		return nil, err
 	}
@@ -381,27 +382,9 @@ func (remote *Backend) GetRangeSplitter(ctx context.Context, instanceCnt int) (*
 		return nil, err
 	}
 	// TODO(tangenta): determine the max key and max ways.
-	maxSize := uint64(len(statsFiles) * sharedisk.WriteBatchSize / instanceCnt)
+	maxSize := totalKVSize / uint64(instanceCnt)
 	rs := sharedisk.NewRangeSplitter(maxSize, math.MaxUint64, math.MaxUint64, mergePropIter, dataFiles)
 	return rs, nil
-}
-
-func (remote *Backend) getAllFileNames(ctx context.Context) ([]string, []string, error) {
-	var data []string
-	var stats []string
-	jobIDStr := strconv.Itoa(int(remote.jobID))
-	err := remote.externalStorage.WalkDir(ctx, &storage.WalkOption{SubDir: jobIDStr}, func(path string, size int64) error {
-		if strings.Contains(path, "_stat") {
-			stats = append(stats, path)
-		} else {
-			data = append(data, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	return data, stats, nil
 }
 
 func getRegionSplitSizeKeys(ctx context.Context, cli pd.Client, tls *common.TLS) (

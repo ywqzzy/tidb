@@ -100,7 +100,7 @@ func (r *statsReader) nextProp() (*RangeProperty, error) {
 		return nil, err
 	}
 	propLen := int(binary.BigEndian.Uint32(lenBuf.get()))
-	if cap(r.propBytes) < int(propLen) {
+	if cap(r.propBytes) < propLen {
 		r.propBytes = make([]byte, propLen)
 	}
 	propBytes, err := r.byteReader.sliceNext(propLen)
@@ -121,6 +121,12 @@ func decodeProp(data []byte) (*RangeProperty, error) {
 	rp.Size = binary.BigEndian.Uint64(data[4+keyLen : 12+keyLen])
 	rp.Keys = binary.BigEndian.Uint64(data[12+keyLen : 20+keyLen])
 	rp.offset = binary.BigEndian.Uint64(data[20+keyLen : 28+keyLen])
+	rp.WriterID = int(binary.BigEndian.Uint32(data[28+keyLen : 32+keyLen]))
+	rp.DataSeq = int(binary.BigEndian.Uint32(data[32+keyLen : 36+keyLen]))
+	if rp.WriterID > 10 || rp.DataSeq > 10 {
+		logutil.BgLogger().Error("invalid writer id or data seq",
+			zap.Int("writer id", rp.WriterID), zap.Int("data seq", rp.DataSeq))
+	}
 	return rp, nil
 }
 

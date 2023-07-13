@@ -201,7 +201,7 @@ func (*litBackfillFlowHandle) IsRetryableErr(error) bool {
 
 func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHandle dispatcher.TaskHandle,
 	gTask *proto.Task, bc *remote.Backend) ([][]byte, error) {
-	firstKey, lastKey, err := getMinMaxKeyFromLastStep(taskHandle, gTask.ID)
+	firstKey, lastKey, totalSize, err := getSummaryFromLastStep(taskHandle, gTask.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHand
 	if err != nil {
 		return nil, err
 	}
-	splitter, err := bc.GetRangeSplitter(ctx, len(instanceIDs))
+	splitter, err := bc.GetRangeSplitter(ctx, totalSize, len(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -252,17 +252,17 @@ func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHand
 	}
 }
 
-func getMinMaxKeyFromLastStep(taskHandle dispatcher.TaskHandle, gTaskID int64) (min, max kv.Key, err error) {
+func getSummaryFromLastStep(taskHandle dispatcher.TaskHandle, gTaskID int64) (min, max kv.Key, totalKVSize uint64, err error) {
 	subTaskMetas, err := taskHandle.GetPreviousSubtaskMetas(gTaskID, proto.StepOne)
 	if err != nil {
-		return nil, nil, errors.Trace(err)
+		return nil, nil, 0, errors.Trace(err)
 	}
 	var minKey, maxKey kv.Key
 	for _, subTaskMeta := range subTaskMetas {
 		var subtask BackfillSubTaskMeta
 		err := json.Unmarshal(subTaskMeta, &subtask)
 		if err != nil {
-			return nil, nil, errors.Trace(err)
+			return nil, nil, 0, errors.Trace(err)
 		}
 		if len(minKey) == 0 || kv.Key(subtask.MinKey).Cmp(minKey) < 0 {
 			minKey = subtask.MinKey
@@ -270,6 +270,7 @@ func getMinMaxKeyFromLastStep(taskHandle dispatcher.TaskHandle, gTaskID int64) (
 		if len(maxKey) == 0 || kv.Key(subtask.MaxKey).Cmp(maxKey) > 0 {
 			maxKey = subtask.MaxKey
 		}
+		totalKVSize += subtask.TotalKVSize
 	}
-	return minKey, maxKey, nil
+	return minKey, maxKey, totalKVSize, nil
 }
