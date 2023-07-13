@@ -154,6 +154,11 @@ func (m *MockBackendCtx) GetBackend() backend.Backend {
 	return nil
 }
 
+// EngineLoaded implements BackendCtx.EngineLoaded interface.
+func (m *MockBackendCtx) EngineLoaded(_ int64) bool {
+	return false
+}
+
 // MockEngineInfo is a mock engine info.
 type MockEngineInfo struct {
 	sessCtx sessionctx.Context

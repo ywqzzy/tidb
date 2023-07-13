@@ -80,7 +80,7 @@ func (h *litBackfillFlowHandle) ProcessNormalFlow(ctx context.Context, taskHandl
 		switch gTask.Step {
 		case proto.StepOne:
 			if bcCtx, ok := ingest.LitBackCtxMgr.Load(job.ID); ok {
-				if bc := bcCtx.GetBackend().(*remote.Backend); bc != nil {
+				if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
 					gTask.Step = proto.StepTwo
 					return h.splitSubtaskRanges(ctx, taskHandle, gTask, bc)
 				}
