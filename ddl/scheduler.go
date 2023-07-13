@@ -76,6 +76,7 @@ type BackfillSubTaskMeta struct {
 	StatsFiles      []string `json:"stats_files"`
 	MinKey          []byte   `json:"min_key"`
 	MaxKey          []byte   `json:"max_key"`
+	TotalKVSize     uint64   `json:"total_kv_size"`
 }
 
 // NewBackfillSchedulerHandle creates a new backfill scheduler.
@@ -351,10 +352,11 @@ func (b *backfillSchedulerHandle) OnSubtaskFinished(ctx context.Context, meta []
 			if err != nil {
 				return nil, err
 			}
-			subtaskMeta.MinKey, subtaskMeta.MaxKey = bc.GetMinMaxKey()
+			subtaskMeta.MinKey, subtaskMeta.MaxKey, subtaskMeta.TotalKVSize = bc.GetSummary()
 			log.FromContext(ctx).Info("get key boundary on subtask finished",
 				zap.String("min", hex.EncodeToString(subtaskMeta.MinKey)),
-				zap.String("max", hex.EncodeToString(subtaskMeta.MaxKey)))
+				zap.String("max", hex.EncodeToString(subtaskMeta.MaxKey)),
+				zap.Uint64("totalSize", subtaskMeta.TotalKVSize))
 			meta, err = json.Marshal(subtaskMeta)
 			if err != nil {
 				return nil, err

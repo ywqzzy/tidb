@@ -17,6 +17,9 @@ package sharedisk
 import (
 	"context"
 	"encoding/binary"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/pingcap/tidb/br/pkg/storage"
 )
@@ -35,7 +38,7 @@ func Create(ctx context.Context, dataWriter storage.ExternalFileWriter) (*KeyVal
 	return kvStore, nil
 }
 
-func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
+func (s *KeyValueStore) AddKeyValue(key, value []byte, writerID, seq int) error {
 	kvLen := len(key) + len(value) + 16
 
 	_, err := s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(nil, uint64(len(key))))
@@ -64,6 +67,8 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 		s.rc.currProp.Key = key
 		s.rc.currProp.offset = s.offset
 		s.rc.currProp.rangeOffsets = rangeOffsets{}
+		s.rc.currProp.WriterID = writerID
+		s.rc.currProp.DataSeq = seq
 	}
 
 	s.rc.lastKey = key
@@ -76,6 +81,56 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte) error {
 	return nil
 }
 
-func (s *KeyValueStore) Finish() error {
-	return nil
+func GetAllFileNames(ctx context.Context, store storage.ExternalStorage,
+	subDir string) (FilePathHandle, []string, error) {
+	var dataFilePaths FilePathHandle
+	var stats []string
+
+	err := store.WalkDir(ctx, &storage.WalkOption{SubDir: subDir}, func(path string, size int64) error {
+		if strings.Contains(path, "_stat") {
+			stats = append(stats, path)
+		} else {
+			dir, file := filepath.Split(path)
+			writerID, err := strconv.Atoi(filepath.Base(dir))
+			if err != nil {
+				return err
+			}
+			seq, err := strconv.Atoi(file)
+			if err != nil {
+				return err
+			}
+			dataFilePaths.Set(writerID, seq, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return dataFilePaths, nil, err
+	}
+	return dataFilePaths, stats, nil
+}
+
+type FilePathHandle struct {
+	paths [][]string
+}
+
+func (p *FilePathHandle) Set(writerID, seq int, path string) {
+	if writerID >= len(p.paths) {
+		p.paths = append(p.paths, make([][]string, writerID-len(p.paths)+1)...)
+	}
+	if seq >= len(p.paths[writerID]) {
+		p.paths[writerID] = append(p.paths[writerID], make([]string, seq-len(p.paths[writerID])+1)...)
+	}
+	p.paths[writerID][seq] = path
+}
+
+func (p *FilePathHandle) Get(writerID, seq int) string {
+	return p.paths[writerID][seq]
+}
+
+func (p *FilePathHandle) ForEach(f func(writerID, seq int, path string)) {
+	for writerID, paths := range p.paths {
+		for seq, path := range paths {
+			f(writerID, seq, path)
+		}
+	}
 }
