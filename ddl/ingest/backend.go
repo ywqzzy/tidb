@@ -55,6 +55,7 @@ type BackendCtx interface {
 	GetCheckpointManager() *CheckpointManager
 
 	GetBackend() backend.Backend
+	EngineLoaded(indexID int64) bool
 }
 
 // FlushMode is used to control how to flush.
@@ -294,4 +295,10 @@ func (bc *litBackendCtx) GetCheckpointManager() *CheckpointManager {
 // GetBackend returns the underlying backend.
 func (bc *litBackendCtx) GetBackend() backend.Backend {
 	return bc.backend
+}
+
+// EngineLoaded returns true if the engine is loaded.
+func (bc *litBackendCtx) EngineLoaded(indexID int64) bool {
+	_, ok := bc.Load(indexID)
+	return ok
 }

@@ -170,7 +170,8 @@ func (b *backfillSchedulerHandle) InitSubtaskExecEnv(ctx context.Context) error 
 	b.bc = bc
 	if b.stepForImport {
 		if b.stepForOrderedImport {
-			return nil
+			_, err := bc.Register(b.job.ID, b.index.ID, b.job.SchemaName, b.job.TableName)
+			return err
 		}
 		return b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 	}
@@ -326,13 +327,23 @@ func (b *backfillSchedulerHandle) orderedImport(ctx context.Context, subtask []b
 		logutil.BgLogger().Error("[ddl] unmarshal error", zap.Error(err))
 		return err
 	}
-	if bcCtx, ok := ingest.LitBackCtxMgr.Load(b.job.ID); ok {
-		if bc, ok := bcCtx.GetBackend().(*remote.Backend); ok {
-			err := bc.SetRange(ctx, subTaskMeta.StartKey, subTaskMeta.EndKey, subTaskMeta.DataFiles, subTaskMeta.StatsFiles)
-			if err != nil {
-				return err
-			}
+	bcCtx, ok := ingest.LitBackCtxMgr.Load(b.job.ID)
+	if !ok {
+		return errors.New("can not find backend context")
+	}
+	bc, ok := bcCtx.GetBackend().(*remote.Backend)
+	if !ok {
+		return errors.New("backend is not remote")
+	}
+	if !bcCtx.EngineLoaded(b.index.ID) {
+		_, err = bcCtx.Register(b.job.ID, b.index.ID, b.job.SchemaName, b.job.TableName)
+		if err != nil {
+			return err
 		}
+	}
+	err = bc.SetRange(ctx, subTaskMeta.StartKey, subTaskMeta.EndKey, subTaskMeta.DataFiles, subTaskMeta.StatsFiles)
+	if err != nil {
+		return err
 	}
 	return b.doFlushAndHandleError(ingest.FlushModeForceGlobal)
 }

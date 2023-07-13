@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/remote"
 	"github.com/pingcap/tidb/br/pkg/lightning/config"
+	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/util/generic"
 	"github.com/pingcap/tidb/util/logutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -93,7 +95,7 @@ func (m *litBackendCtxMgr) Register(ctx context.Context, unique bool, jobID int6
 			logutil.BgLogger().Warn(LitWarnConfigError, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
 		}
-		bd, err := createRemoteBackend(ctx, cfg, jobID)
+		bd, err := createBackend(ctx, cfg, jobID)
 		if err != nil {
 			logutil.BgLogger().Error(LitErrCreateBackendFail, zap.Int64("job ID", jobID), zap.Error(err))
 			return nil, err
@@ -112,6 +114,14 @@ func (m *litBackendCtxMgr) Register(ctx context.Context, unique bool, jobID int6
 	return bc, nil
 }
 
+func createBackend(ctx context.Context, cfg *Config, jobID int64) (backend.Backend, error) {
+	tempStorage := variable.TempStorageURI.Load()
+	if strings.HasPrefix(tempStorage, "s3://") {
+		return createRemoteBackend(ctx, cfg, jobID, tempStorage)
+	}
+	return createLocalBackend(ctx, cfg)
+}
+
 func createLocalBackend(ctx context.Context, cfg *Config) (*local.Backend, error) {
 	tls, err := cfg.Lightning.ToTLS()
 	if err != nil {
@@ -127,21 +137,23 @@ func createLocalBackend(ctx context.Context, cfg *Config) (*local.Backend, error
 	return local.NewBackend(ctx, tls, backendConfig, regionSizeGetter)
 }
 
-func createRemoteBackend(ctx context.Context, cfg *Config, jobID int64) (backend.Backend, error) {
+func createRemoteBackend(ctx context.Context, cfg *Config, jobID int64, tempStorage string) (backend.Backend, error) {
 	tls, err := cfg.Lightning.ToTLS()
 	if err != nil {
 		logutil.BgLogger().Error(LitErrCreateBackendFail, zap.Error(err))
 		return nil, err
 	}
 	backendConfig := local.NewBackendConfig(cfg.Lightning, int(LitRLimit), cfg.KeyspaceName)
-	return remote.NewRemoteBackend(ctx, backendConfig, tls, &remote.ExtStoreConfig{
-		Bucket:          "nfs",
-		Prefix:          "tools_test_data/sharedisk",
-		AccessKey:       "minioadmin",
-		SecretAccessKey: "minioadmin",
-		Host:            "127.0.0.1",
-		Port:            "9000",
-	}, jobID)
+	remoteCfg := &remote.Config{
+		MemQuota:       variable.GlobalSortMemQuota.Load(),
+		ReadBufferSize: variable.GlobalSortReadBufferSize.Load(),
+		WriteBatchSize: variable.GlobalSortWriteBatchSize.Load(),
+		StatSampleKeys: variable.GlobalSortStatSampleKeys.Load(),
+		StatSampleSize: variable.GlobalSortStatSampleSize.Load(),
+		SubtaskCnt:     variable.GlobalSortSubtaskCnt.Load(),
+		S3ChunkSize:    variable.GlobalSortS3ChunkSize.Load(),
+	}
+	return remote.NewRemoteBackend(ctx, remoteCfg, backendConfig, tls, tempStorage, jobID)
 }
 
 const checkpointUpdateInterval = 10 * time.Minute

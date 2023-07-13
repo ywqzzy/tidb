@@ -100,20 +100,9 @@ var (
 	splitRetryTimes = 8
 )
 
-type ExtStoreConfig struct {
-	Bucket          string
-	Prefix          string
-	AccessKey       string
-	SecretAccessKey string
-	Host            string
-	Port            string
-}
-
-func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.TLS,
-	extCfg *ExtStoreConfig, jobID int64) (backend.Backend, error) {
-	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
-		extCfg.Bucket, extCfg.Prefix, extCfg.AccessKey, extCfg.SecretAccessKey, extCfg.Host, extCfg.Port)
-	bd, err := storage.ParseBackend(uri, nil)
+func NewRemoteBackend(ctx context.Context, remoteCfg *Config, cfg local.BackendConfig, tls *common.TLS,
+	tempStorageURI string, jobID int64) (backend.Backend, error) {
+	bd, err := storage.ParseBackend(tempStorageURI, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +132,7 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 	bc := &Backend{
 		jobID:           jobID,
 		externalStorage: extStore,
+		config:          remoteCfg,
 		mu: struct {
 			sync.RWMutex
 			maxWriterID int
@@ -171,9 +161,20 @@ func NewRemoteBackend(ctx context.Context, cfg local.BackendConfig, tls *common.
 	return bc, nil
 }
 
+type Config struct {
+	MemQuota       uint64
+	ReadBufferSize uint64
+	WriteBatchSize int64
+	StatSampleKeys int64
+	StatSampleSize uint64
+	SubtaskCnt     int64
+	S3ChunkSize    uint64
+}
+
 type Backend struct {
 	jobID           int64
 	externalStorage storage.ExternalStorage
+	config          *Config
 	mu              struct {
 		sync.RWMutex
 		maxWriterID int
