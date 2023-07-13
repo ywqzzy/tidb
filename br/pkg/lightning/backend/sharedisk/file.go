@@ -27,21 +27,22 @@ import (
 type KeyValueStore struct {
 	dataWriter storage.ExternalFileWriter
 
-	rc     *RangePropertiesCollector
-	ctx    context.Context
-	offset uint64
-	keyCnt uint64
+	rc        *RangePropertiesCollector
+	ctx       context.Context
+	offset    uint64
+	keyCnt    uint64
+	u64Buffer []byte
 }
 
 func Create(ctx context.Context, dataWriter storage.ExternalFileWriter) (*KeyValueStore, error) {
-	kvStore := &KeyValueStore{dataWriter: dataWriter, ctx: ctx}
+	kvStore := &KeyValueStore{dataWriter: dataWriter, ctx: ctx, u64Buffer: make([]byte, 8)}
 	return kvStore, nil
 }
 
 func (s *KeyValueStore) AddKeyValue(key, value []byte, writerID, seq int) error {
 	kvLen := len(key) + len(value) + 16
 
-	_, err := s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(nil, uint64(len(key))))
+	_, err := s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(s.u64Buffer[:0], uint64(len(key))))
 	if err != nil {
 		return err
 	}
@@ -49,7 +50,7 @@ func (s *KeyValueStore) AddKeyValue(key, value []byte, writerID, seq int) error 
 	if err != nil {
 		return err
 	}
-	_, err = s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(nil, uint64(len(value))))
+	_, err = s.dataWriter.Write(s.ctx, binary.BigEndian.AppendUint64(s.u64Buffer[:0], uint64(len(value))))
 	if err != nil {
 		return err
 	}
