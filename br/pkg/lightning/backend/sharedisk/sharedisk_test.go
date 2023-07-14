@@ -58,10 +58,6 @@ func TestWriter(t *testing.T) {
 	writer := NewWriter(context.Background(), storage, "jobID/engineUUID", 0, memLimit,
 		keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
 
-	pool := membuf.NewPool()
-	defer pool.Destroy()
-	writer.kvBuffer = pool.NewBuffer()
-
 	var kvs []common.KvPair
 	value := make([]byte, 128)
 	for i := 0; i < 16; i++ {
@@ -190,7 +186,6 @@ func TestWriterPerf(t *testing.T) {
 
 	pool := membuf.NewPool()
 	defer pool.Destroy()
-	writer.kvBuffer = pool.NewBuffer()
 	defer writer.Close(ctx)
 
 	var startMemory runtime.MemStats

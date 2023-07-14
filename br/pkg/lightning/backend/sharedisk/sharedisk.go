@@ -151,7 +151,6 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, memSizeLimit uint64, keyDist int64, sizeDist uint64, writeBatchSize int64,
 	onClose OnCloseFunc) *Writer {
 	engine := NewEngine(sizeDist, uint64(keyDist))
-	pool := membuf.NewPool()
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
 	return &Writer{
 		ctx:            ctx,
@@ -159,8 +158,6 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 		memSizeLimit:   memSizeLimit,
 		keyAdapter:     &local.NoopKeyAdapter{},
 		exStorage:      externalStorage,
-		memBufPool:     pool,
-		kvBuffer:       pool.NewBuffer(),
 		writeBatch:     make([]common.KvPair, 0, writeBatchSize),
 		currentSeq:     0,
 		tikvCodec:      keyspace.CodecV1,
@@ -183,7 +180,6 @@ type Writer struct {
 
 	// bytes buffer for writeBatch
 	memBufPool *membuf.Pool
-	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
 	batchSize  uint64
 
@@ -219,13 +215,9 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 	w.Lock()
 	defer w.Unlock()
 
-	keyAdapter := w.keyAdapter
 	for _, pair := range kvs {
 		w.batchSize += uint64(len(pair.Key) + len(pair.Val))
-		buf := w.kvBuffer.AllocBytes(keyAdapter.EncodedLen(pair.Key, pair.RowID))
-		key := keyAdapter.Encode(buf[:0], pair.Key, pair.RowID)
-		val := w.kvBuffer.AddBytes(pair.Val)
-		w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
+		w.writeBatch = append(w.writeBatch, common.KvPair{Key: pair.Key, Val: pair.Val})
 		if w.batchSize >= w.memSizeLimit {
 			if err := w.flushKVs(ctx); err != nil {
 				return err
@@ -247,7 +239,6 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
 		zap.String("minKey", hex.EncodeToString(w.minKey)), zap.String("maxKey", hex.EncodeToString(w.maxKey)))
 	w.closed = true
-	defer w.memBufPool.Destroy()
 	err := w.flushKVs(ctx)
 	if err != nil {
 		return status(false), err
@@ -358,7 +349,6 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key, size)
 
 	w.writeBatch = w.writeBatch[:0]
-	w.kvBuffer.Reset()
 	w.batchSize = 0
 	//w.engine.rc.reset()
 	return nil
