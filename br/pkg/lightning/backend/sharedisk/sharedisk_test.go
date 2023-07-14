@@ -156,9 +156,9 @@ func randomString(n int) string {
 }
 
 func TestWriterPerf(t *testing.T) {
-	var keySize = 256
+	var keySize = 1024*1024 + 1
 	var valueSize = 1000
-	var rowCnt = 2000000
+	var rowCnt = 2000
 	var readBufferSize = 64 * 1024
 	const (
 		memLimit       uint64 = 64 * 1024 * 1024
