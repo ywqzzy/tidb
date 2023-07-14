@@ -34,7 +34,9 @@ type Allocator interface {
 type stdAllocator struct{}
 
 func (stdAllocator) Alloc(n int) []byte {
-	return make([]byte, n)
+	res := make([]byte, n)
+	logutil.BgLogger().Warn("alloc memory", zap.Int("size", n), zap.Any("len", len(res)), zap.Any("cap", cap(res)))
+	return res
 }
 
 func (stdAllocator) Free(_ []byte) {}
