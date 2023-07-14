@@ -135,11 +135,6 @@ type Engine struct {
 	rc *RangePropertiesCollector
 }
 
-var WriteBatchSize = 8 * 1024
-var MemQuota = 1024 * 1024 * 1024
-var SizeDist = 1024 * 1024
-var KeyDist = 8 * 1024
-
 type WriterSummary struct {
 	WriterID  int
 	Seq       int
@@ -153,27 +148,27 @@ type OnCloseFunc func(summary *WriterSummary)
 func DummyOnCloseFunc(*WriterSummary) {}
 
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
-	prefix string, writerID int, onClose OnCloseFunc) *Writer {
-	// TODO(tangenta): make it configurable.
-	engine := NewEngine(uint64(SizeDist), uint64(KeyDist))
+	prefix string, writerID int, memSizeLimit uint64, keyDist int64, sizeDist uint64, writeBatchSize int64,
+	onClose OnCloseFunc) *Writer {
+	engine := NewEngine(sizeDist, uint64(keyDist))
 	pool := membuf.NewPool()
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
 	return &Writer{
-		ctx:               ctx,
-		engine:            engine,
-		memtableSizeLimit: MemQuota,
-		keyAdapter:        &local.NoopKeyAdapter{},
-		exStorage:         externalStorage,
-		memBufPool:        pool,
-		kvBuffer:          pool.NewBuffer(),
-		writeBatch:        make([]common.KvPair, 0, WriteBatchSize),
-		currentSeq:        0,
-		tikvCodec:         keyspace.CodecV1,
-		filenamePrefix:    filePrefix,
-		writerID:          writerID,
-		kvStore:           nil,
-		onClose:           onClose,
-		closed:            false,
+		ctx:            ctx,
+		engine:         engine,
+		memSizeLimit:   memSizeLimit,
+		keyAdapter:     &local.NoopKeyAdapter{},
+		exStorage:      externalStorage,
+		memBufPool:     pool,
+		kvBuffer:       pool.NewBuffer(),
+		writeBatch:     make([]common.KvPair, 0, writeBatchSize),
+		currentSeq:     0,
+		tikvCodec:      keyspace.CodecV1,
+		filenamePrefix: filePrefix,
+		writerID:       writerID,
+		kvStore:        nil,
+		onClose:        onClose,
+		closed:         false,
 	}
 }
 
@@ -181,16 +176,16 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 type Writer struct {
 	ctx context.Context
 	sync.Mutex
-	engine            *Engine
-	memtableSizeLimit int
-	keyAdapter        local.KeyAdapter
-	exStorage         storage.ExternalStorage
+	engine       *Engine
+	memSizeLimit uint64
+	keyAdapter   local.KeyAdapter
+	exStorage    storage.ExternalStorage
 
 	// bytes buffer for writeBatch
 	memBufPool *membuf.Pool
 	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
-	batchSize  int
+	batchSize  uint64
 
 	currentSeq int
 	onClose    OnCloseFunc
@@ -226,12 +221,12 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 
 	keyAdapter := w.keyAdapter
 	for _, pair := range kvs {
-		w.batchSize += len(pair.Key) + len(pair.Val)
+		w.batchSize += uint64(len(pair.Key) + len(pair.Val))
 		buf := w.kvBuffer.AllocBytes(keyAdapter.EncodedLen(pair.Key, pair.RowID))
 		key := keyAdapter.Encode(buf[:0], pair.Key, pair.RowID)
 		val := w.kvBuffer.AddBytes(pair.Val)
 		w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
-		if w.batchSize >= w.memtableSizeLimit {
+		if w.batchSize >= w.memSizeLimit {
 			if err := w.flushKVs(ctx); err != nil {
 				return err
 			}

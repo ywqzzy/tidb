@@ -332,7 +332,9 @@ func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriter
 			zap.Uint64("totalSize", s.TotalSize))
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
-	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
+	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix,
+		remote.allocWriterID(), remote.config.MemQuota, remote.config.StatSampleKeys,
+		remote.config.StatSampleSize, remote.config.WriteBatchSize, onClose)
 	remote.mu.Lock()
 	remote.mu.writers = append(remote.mu.writers, writer)
 	remote.mu.Unlock()
@@ -383,7 +385,13 @@ func (remote *Backend) GetRangeSplitter(ctx context.Context, totalKVSize uint64,
 		return nil, err
 	}
 	// TODO(tangenta): determine the max key and max ways.
-	maxSize := totalKVSize / uint64(instanceCnt)
+	var approxSubtaskCnt uint64
+	if remote.config.SubtaskCnt == -1 {
+		approxSubtaskCnt = uint64(instanceCnt)
+	} else {
+		approxSubtaskCnt = uint64(remote.config.SubtaskCnt)
+	}
+	maxSize := totalKVSize / approxSubtaskCnt
 	rs := sharedisk.NewRangeSplitter(maxSize, math.MaxUint64, math.MaxUint64, mergePropIter, dataFiles)
 	return rs, nil
 }
