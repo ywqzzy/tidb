@@ -151,6 +151,7 @@ func (b *Buffer) addBuf() {
 	} else {
 		buf := b.pool.acquire()
 		b.bufs = append(b.bufs, buf)
+		logutil.BgLogger().Warn("addBuf", zap.Int("len", len(b.bufs)))
 		b.curBuf = buf
 		b.curBufIdx = len(b.bufs) - 1
 	}
@@ -192,7 +193,8 @@ func (b *Buffer) AllocBytes(n int) []byte {
 	}
 	idx := b.curIdx
 	b.curIdx += n
-	logutil.BgLogger().Info("alloc bytes", zap.Any("n", n), zap.Any("curIdx", b.curIdx), zap.Any("idx", idx), zap.Any("curBufLen", len(b.curBuf)))
+	logutil.BgLogger().Info("alloc bytes", zap.Any("n", n),
+		zap.Any("curIdx", b.curIdx), zap.Any("idx", idx), zap.Any("curBufLen", len(b.curBuf)), zap.Any("curBufIdx", b.curBufIdx)))
 	return b.curBuf[idx:b.curIdx:b.curIdx]
 }
 
