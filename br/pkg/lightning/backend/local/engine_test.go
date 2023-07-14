@@ -99,7 +99,7 @@ func TestIngestSSTWithClosedEngine(t *testing.T) {
 		ctx:          engineCtx,
 		cancel:       cancel,
 		sstMetasChan: make(chan metaOrFlush, 64),
-		keyAdapter:   NoopKeyAdapter{},
+		keyAdapter:   noopKeyAdapter{},
 		logger:       log.L(),
 	}
 	f.db.Store(db)

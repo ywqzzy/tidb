@@ -45,21 +45,21 @@ func reallocBytes(b []byte, n int) []byte {
 	return b
 }
 
-type NoopKeyAdapter struct{}
+type noopKeyAdapter struct{}
 
-func (NoopKeyAdapter) Encode(dst []byte, key []byte, _ []byte) []byte {
+func (noopKeyAdapter) Encode(dst []byte, key []byte, _ []byte) []byte {
 	return append(dst, key...)
 }
 
-func (NoopKeyAdapter) Decode(dst []byte, data []byte) ([]byte, error) {
+func (noopKeyAdapter) Decode(dst []byte, data []byte) ([]byte, error) {
 	return append(dst, data...), nil
 }
 
-func (NoopKeyAdapter) EncodedLen(key []byte, _ []byte) int {
+func (noopKeyAdapter) EncodedLen(key []byte, _ []byte) int {
 	return len(key)
 }
 
-var _ KeyAdapter = NoopKeyAdapter{}
+var _ KeyAdapter = noopKeyAdapter{}
 
 type dupDetectKeyAdapter struct{}
 

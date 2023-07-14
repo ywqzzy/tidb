@@ -28,7 +28,6 @@ import (
 	"github.com/pingcap/tidb/br/pkg/lightning/backend"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/encode"
 	"github.com/pingcap/tidb/br/pkg/lightning/backend/kv"
-	"github.com/pingcap/tidb/br/pkg/lightning/backend/local"
 	"github.com/pingcap/tidb/br/pkg/lightning/common"
 	"github.com/pingcap/tidb/br/pkg/membuf"
 	"github.com/pingcap/tidb/br/pkg/storage"
@@ -156,7 +155,6 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 		ctx:            ctx,
 		engine:         engine,
 		memSizeLimit:   memSizeLimit,
-		keyAdapter:     &local.NoopKeyAdapter{},
 		exStorage:      externalStorage,
 		writeBatch:     make([]common.KvPair, 0, writeBatchSize),
 		currentSeq:     0,
@@ -175,7 +173,6 @@ type Writer struct {
 	sync.Mutex
 	engine       *Engine
 	memSizeLimit uint64
-	keyAdapter   local.KeyAdapter
 	exStorage    storage.ExternalStorage
 
 	// bytes buffer for writeBatch
