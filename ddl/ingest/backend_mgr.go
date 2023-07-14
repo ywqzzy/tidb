@@ -136,11 +136,11 @@ func createRemoteBackend(ctx context.Context, cfg *Config, jobID int64) (backend
 	backendConfig := local.NewBackendConfig(cfg.Lightning, int(LitRLimit), cfg.KeyspaceName)
 	return remote.NewRemoteBackend(ctx, backendConfig, tls, &remote.ExtStoreConfig{
 		Bucket:          "nfs",
-		Prefix:          "tools_test_data/sharedisk",
+		Prefix:          "tools_test_data/sharedisk-ywq",
 		AccessKey:       "minioadmin",
 		SecretAccessKey: "minioadmin",
-		Host:            "127.0.0.1",
-		Port:            "9000",
+		Host:            "minio.pingcap.net",
+		Port:            "9001",
 	}, jobID)
 }
 

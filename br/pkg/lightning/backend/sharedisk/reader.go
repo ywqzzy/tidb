@@ -20,7 +20,9 @@ import (
 	"io"
 	"time"
 
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/br/pkg/storage"
+	"github.com/pingcap/tidb/metrics"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/mathutil"
 	"go.uber.org/zap"
@@ -248,6 +250,9 @@ func (r *byteReader) reload() error {
 	elapsed := time.Since(startTime).Microseconds()
 	ReadByteForTest.Add(uint64(nBytes))
 	ReadTimeForTest.Add(uint64(elapsed))
+	readRate := float64(nBytes) / 1024.0 / 1024.0 / (float64(time.Since(startTime).Microseconds()) / 1000000.0)
+	log.Info("ywq test read rate", zap.Any("res", readRate))
+	metrics.GlobalSortSharedDiskIORate.WithLabelValues("read").Set(readRate)
 	ReadIOCnt.Add(1)
 	r.bufOffset = 0
 	if nBytes < len(r.buf) {

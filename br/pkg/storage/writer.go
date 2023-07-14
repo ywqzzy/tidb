@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"time"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/snappy"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/metrics"
 	"go.uber.org/zap"
 )
 
@@ -211,7 +213,10 @@ func (u *bufferedWriter) uploadChunk(ctx context.Context) error {
 	}
 	b := u.buf.Bytes()
 	u.buf.Reset()
+	startTime := time.Now()
 	_, err := u.writer.Write(ctx, b)
+	metrics.GlobalSortSharedDiskIORate.WithLabelValues("write").Set(float64(len(b)) / 1024.0 / 1024.0 / (float64(time.Since(startTime).Microseconds()) / 1000000.0))
+	log.Info("ywq test", zap.Any("m/s", float64(len(b))/1024.0/1024.0/(float64(time.Since(startTime).Microseconds())/1000000.0)))
 	return errors.Trace(err)
 }
 

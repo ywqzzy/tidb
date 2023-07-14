@@ -133,6 +133,8 @@ func RegisterMetrics() {
 	prometheus.MustRegister(DDLWorkerHistogram)
 	prometheus.MustRegister(DDLJobTableDuration)
 	prometheus.MustRegister(DDLRunningJobCount)
+	prometheus.MustRegister(GlobalSortSharedDiskRate)
+	prometheus.MustRegister(GlobalSortSharedDiskIORate)
 	prometheus.MustRegister(DeploySyncerHistogram)
 	prometheus.MustRegister(DistSQLPartialCountHistogram)
 	prometheus.MustRegister(DistSQLCoprCacheCounter)

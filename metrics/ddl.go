@@ -56,10 +56,12 @@ var (
 	DDLOwner          = "owner"
 	DDLCounter        *prometheus.CounterVec
 
-	BackfillTotalCounter  *prometheus.CounterVec
-	BackfillProgressGauge *prometheus.GaugeVec
-	DDLJobTableDuration   *prometheus.HistogramVec
-	DDLRunningJobCount    *prometheus.GaugeVec
+	BackfillTotalCounter       *prometheus.CounterVec
+	BackfillProgressGauge      *prometheus.GaugeVec
+	DDLJobTableDuration        *prometheus.HistogramVec
+	DDLRunningJobCount         *prometheus.GaugeVec
+	GlobalSortSharedDiskRate   *prometheus.HistogramVec
+	GlobalSortSharedDiskIORate *prometheus.GaugeVec
 )
 
 // InitDDLMetrics initializes defines DDL metrics.
@@ -164,6 +166,22 @@ func InitDDLMetrics() {
 			Subsystem: "ddl",
 			Name:      "running_job_count",
 			Help:      "Running DDL jobs count",
+		}, []string{LblType})
+
+	GlobalSortSharedDiskRate = NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "tidb",
+		Subsystem: "global_sort",
+		Name:      "shared_disk_rate",
+		Help:      "shared disk rate",
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2, 20), // 1ms ~ 524s
+	}, []string{LblType})
+
+	GlobalSortSharedDiskIORate = NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "tidb",
+			Subsystem: "global_sort",
+			Name:      "shared_disk_io_rate",
+			Help:      "shared disk io rate",
 		}, []string{LblType})
 }
 
