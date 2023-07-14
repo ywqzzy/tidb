@@ -153,12 +153,12 @@ func randomString(n int) string {
 }
 
 func TestWriterPerf(t *testing.T) {
-	var keySize = 256
+	var keySize = 1024*1024 + 1
 	var valueSize = 1000
-	var rowCnt = 2000000
+	var rowCnt = 2000
 	var readBufferSize = 64 * 1024
-	var memLimit = 64 * 1024 * 1024
-	MemQuota = memLimit
+	//var memLimit = 64 * 1024 * 1024
+	//MemQuota = memLimit
 
 	bucket := "globalsorttest"
 	prefix := "tools_test_data/sharedisk"

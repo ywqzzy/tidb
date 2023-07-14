@@ -14,6 +14,11 @@
 
 package membuf
 
+import (
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
+)
+
 const (
 	defaultPoolSize            = 1024
 	defaultBlockSize           = 1 << 20 // 1M
@@ -187,6 +192,7 @@ func (b *Buffer) AllocBytes(n int) []byte {
 	}
 	idx := b.curIdx
 	b.curIdx += n
+	logutil.BgLogger().Info("alloc bytes", zap.Any("n", n), zap.Any("curIdx", b.curIdx), zap.Any("idx", idx), zap.Any("curBufLen", len(b.curBuf)))
 	return b.curBuf[idx:b.curIdx:b.curIdx]
 }
 
