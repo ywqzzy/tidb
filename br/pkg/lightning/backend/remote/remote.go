@@ -245,12 +245,7 @@ func (remote *Backend) SetRange(ctx context.Context, start, end kv.Key, dataFile
 func (remote *Backend) ImportEngine(ctx context.Context, engineUUID uuid.UUID, regionSplitSize, regionSplitKeys int64) error {
 	switch remote.phase {
 	case PhaseUpload:
-		for _, w := range remote.mu.writers {
-			_, err := w.Close(ctx)
-			if err != nil {
-				return err
-			}
-		}
+		// Do nothing for uploading stage.
 		return nil
 	case PhaseImport:
 		if len(remote.startKey) == 0 {
@@ -332,7 +327,9 @@ func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriter
 			zap.Uint64("totalSize", s.TotalSize))
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
-	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix, remote.allocWriterID(), onClose)
+	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix,
+		remote.allocWriterID(), remote.config.MemQuota, remote.config.StatSampleKeys,
+		remote.config.StatSampleSize, remote.config.WriteBatchSize, onClose)
 	remote.mu.Lock()
 	remote.mu.writers = append(remote.mu.writers, writer)
 	remote.mu.Unlock()
@@ -362,6 +359,16 @@ func (remote *Backend) handleWriterSummary(s *sharedisk.WriterSummary) {
 	remote.mu.totalSize += s.TotalSize
 }
 
+func (remote *Backend) CloseWriters(ctx context.Context) error {
+	for _, w := range remote.mu.writers {
+		_, err := w.Close(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (remote *Backend) GetSummary() (min, max kv.Key, totalSize uint64) {
 	remote.mu.Lock()
 	defer remote.mu.Unlock()
@@ -383,7 +390,13 @@ func (remote *Backend) GetRangeSplitter(ctx context.Context, totalKVSize uint64,
 		return nil, err
 	}
 	// TODO(tangenta): determine the max key and max ways.
-	maxSize := totalKVSize / uint64(instanceCnt)
+	var approxSubtaskCnt uint64
+	if remote.config.SubtaskCnt == -1 {
+		approxSubtaskCnt = uint64(instanceCnt)
+	} else {
+		approxSubtaskCnt = uint64(remote.config.SubtaskCnt)
+	}
+	maxSize := totalKVSize / approxSubtaskCnt
 	rs := sharedisk.NewRangeSplitter(maxSize, math.MaxUint64, math.MaxUint64, mergePropIter, dataFiles)
 	return rs, nil
 }

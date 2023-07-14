@@ -49,11 +49,14 @@ func TestWriter(t *testing.T) {
 	err = cleanupFiles(ctx, storage, "jobID/engineUUID")
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "jobID/engineUUID", 0, DummyOnCloseFunc)
-
-	pool := membuf.NewPool()
-	defer pool.Destroy()
-	writer.kvBuffer = pool.NewBuffer()
+	const (
+		memLimit       uint64 = 64 * 1024 * 1024
+		sizeDist       uint64 = 1024 * 1024
+		keyDist               = 8 * 1024
+		writeBatchSize        = 8 * 1024
+	)
+	writer := NewWriter(context.Background(), storage, "jobID/engineUUID", 0, memLimit,
+		keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
 
 	var kvs []common.KvPair
 	value := make([]byte, 128)
@@ -157,8 +160,12 @@ func TestWriterPerf(t *testing.T) {
 	var valueSize = 1000
 	var rowCnt = 2000
 	var readBufferSize = 64 * 1024
-	//var memLimit = 64 * 1024 * 1024
-	//MemQuota = memLimit
+	const (
+		memLimit       uint64 = 64 * 1024 * 1024
+		keyDist               = 8 * 1024
+		sizeDist       uint64 = 1024 * 1024
+		writeBatchSize        = 8 * 1024
+	)
 
 	bucket := "globalsorttest"
 	prefix := "tools_test_data/sharedisk"
@@ -174,12 +181,11 @@ func TestWriterPerf(t *testing.T) {
 	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "test", 0, DummyOnCloseFunc)
+	writer := NewWriter(context.Background(), storage, "test", 0, memLimit, keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
 	writer.filenamePrefix = "test"
 
 	pool := membuf.NewPool()
 	defer pool.Destroy()
-	writer.kvBuffer = pool.NewBuffer()
 	defer writer.Close(ctx)
 
 	var startMemory runtime.MemStats

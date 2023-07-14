@@ -1037,9 +1037,9 @@ func (w *Writer) appendRowsSorted(kvs []common.KvPair) (err error) {
 		totalKeySize += keySize
 	}
 	w.batchCount += len(kvs)
-	// NoopKeyAdapter doesn't really change the key,
+	// noopKeyAdapter doesn't really change the key,
 	// skipping the encoding to avoid unnecessary alloc and copy.
-	if _, ok := keyAdapter.(NoopKeyAdapter); !ok {
+	if _, ok := keyAdapter.(noopKeyAdapter); !ok {
 		if cap(w.sortedKeyBuf) < totalKeySize {
 			w.sortedKeyBuf = make([]byte, totalKeySize)
 		}

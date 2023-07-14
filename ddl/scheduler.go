@@ -363,6 +363,10 @@ func (b *backfillSchedulerHandle) OnSubtaskFinished(ctx context.Context, meta []
 			if err != nil {
 				return nil, err
 			}
+			err = bc.CloseWriters(ctx)
+			if err != nil {
+				return nil, err
+			}
 			subtaskMeta.MinKey, subtaskMeta.MaxKey, subtaskMeta.TotalKVSize = bc.GetSummary()
 			log.FromContext(ctx).Info("get key boundary on subtask finished",
 				zap.String("min", hex.EncodeToString(subtaskMeta.MinKey)),
