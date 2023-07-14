@@ -194,7 +194,7 @@ func (b *Buffer) AllocBytes(n int) []byte {
 	idx := b.curIdx
 	b.curIdx += n
 	logutil.BgLogger().Info("alloc bytes", zap.Any("n", n),
-		zap.Any("curIdx", b.curIdx), zap.Any("idx", idx), zap.Any("curBufLen", len(b.curBuf)), zap.Any("curBufIdx", b.curBufIdx)))
+		zap.Any("curIdx", b.curIdx), zap.Any("idx", idx), zap.Any("curBufLen", len(b.curBuf)), zap.Any("curBufIdx", b.curBufIdx))
 	return b.curBuf[idx:b.curIdx:b.curIdx]
 }
 
