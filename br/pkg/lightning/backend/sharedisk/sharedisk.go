@@ -51,8 +51,10 @@ type rangeOffsets struct {
 }
 
 type RangeProperty struct {
-	Key    []byte
-	offset uint64
+	Key      []byte
+	offset   uint64
+	WriterID int
+	DataSeq  int
 	rangeOffsets
 }
 
@@ -77,13 +79,16 @@ func (rc *RangePropertiesCollector) reset() {
 	rc.currentOffsets = rangeOffsets{}
 }
 
+// keyLen + p.size + p.keys + p.offset + p.WriterID + p.DataSeq
+const propertyLengthExceptKey = 4 + 8 + 8 + 8 + 4 + 4
+
 func (rc *RangePropertiesCollector) Encode() []byte {
 	b := make([]byte, 0, 1024)
 	idx := 0
 	for _, p := range rc.props {
 		// Size.
 		b = append(b, 0, 0, 0, 0)
-		binary.BigEndian.PutUint32(b[idx:], uint32(28+len(p.Key)))
+		binary.BigEndian.PutUint32(b[idx:], uint32(propertyLengthExceptKey+len(p.Key)))
 		idx += 4
 
 		b = append(b, 0, 0, 0, 0)
@@ -103,6 +108,14 @@ func (rc *RangePropertiesCollector) Encode() []byte {
 		b = append(b, 0, 0, 0, 0, 0, 0, 0, 0)
 		binary.BigEndian.PutUint64(b[idx:], p.offset)
 		idx += 8
+
+		b = append(b, 0, 0, 0, 0)
+		binary.BigEndian.PutUint32(b[idx:], uint32(p.WriterID))
+		idx += 4
+
+		b = append(b, 0, 0, 0, 0)
+		binary.BigEndian.PutUint32(b[idx:], uint32(p.DataSeq))
+		idx += 4
 	}
 	return b
 }
@@ -125,15 +138,25 @@ type Engine struct {
 
 var WriteBatchSize = 8 * 1024
 var MemQuota = 1024 * 1024 * 1024
+var SizeDist = 1024 * 1024
+var KeyDist = 8 * 1024
 
-type OnCloseFunc func(writerID int, seq int, min tidbkv.Key, max tidbkv.Key)
+type WriterSummary struct {
+	WriterID  int
+	Seq       int
+	Min       tidbkv.Key
+	Max       tidbkv.Key
+	TotalSize uint64
+}
 
-func DummyOnCloseFunc(int, int, tidbkv.Key, tidbkv.Key) {}
+type OnCloseFunc func(summary *WriterSummary)
+
+func DummyOnCloseFunc(*WriterSummary) {}
 
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, onClose OnCloseFunc) *Writer {
 	// TODO(tangenta): make it configurable.
-	engine := NewEngine(2048, 256)
+	engine := NewEngine(uint64(SizeDist), uint64(KeyDist))
 	pool := membuf.NewPool()
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
 	return &Writer{
@@ -179,6 +202,7 @@ type Writer struct {
 	writerID       int
 	minKey         tidbkv.Key
 	maxKey         tidbkv.Key
+	totalSize      uint64
 
 	kvStore *KeyValueStore
 }
@@ -212,9 +236,6 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 			if err := w.flushKVs(ctx); err != nil {
 				return err
 			}
-			w.writeBatch = w.writeBatch[:0]
-			w.kvBuffer.Reset()
-			w.batchSize = 0
 		}
 	}
 
@@ -237,21 +258,39 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if err != nil {
 		return status(false), err
 	}
-	err = w.kvStore.Finish()
-	if err != nil {
-		return status(false), err
+
+	// Write the stat information to the storage.
+	if len(w.kvStore.rc.props) > 0 {
+		statPath := filepath.Join(w.filenamePrefix+"_stat", "0")
+		stat, err := w.exStorage.Create(w.ctx, statPath)
+		_, err = stat.Write(w.ctx, w.kvStore.rc.Encode())
+		if err != nil {
+			return status(false), err
+		}
+		err = stat.Close(w.ctx)
+		if err != nil {
+			return status(false), err
+		}
 	}
-	w.onClose(w.writerID, w.currentSeq, w.minKey, w.maxKey)
+
+	w.onClose(&WriterSummary{
+		WriterID:  w.writerID,
+		Seq:       w.currentSeq,
+		Min:       w.minKey,
+		Max:       w.maxKey,
+		TotalSize: w.totalSize,
+	})
 	return status(true), nil
 }
 
-func (w *Writer) recordMinMax(newMin, newMax tidbkv.Key) {
+func (w *Writer) recordMinMax(newMin, newMax tidbkv.Key, size uint64) {
 	if len(w.minKey) == 0 || newMin.Cmp(w.minKey) < 0 {
 		w.minKey = newMin.Clone()
 	}
 	if len(w.maxKey) == 0 || newMax.Cmp(w.maxKey) > 0 {
 		w.maxKey = newMax.Clone()
 	}
+	w.totalSize += size
 }
 
 type status bool
@@ -283,66 +322,62 @@ func CheckDataCnt(file string, exStorage storage.ExternalStorage) error {
 }
 
 func (w *Writer) flushKVs(ctx context.Context) error {
-	dataWriter, statWriter, err := w.createStorageWriter()
+	if len(w.writeBatch) == 0 {
+		return nil
+	}
+
+	dataWriter, err := w.createStorageWriter()
 	if err != nil {
 		return err
 	}
-	//defer func() {
-	//	err := CheckDataCnt(filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq-1)), w.exStorage)
-	//	if err != nil {
-	//		logutil.BgLogger().Error("check data cnt failed", zap.Error(err))
-	//	}
-	//}()
+
 	defer func() {
+		w.currentSeq++
 		dataWriter.Close(w.ctx)
-		statWriter.Close(w.ctx)
 	}()
-	w.currentSeq++
 
 	slices.SortFunc(w.writeBatch, func(i, j common.KvPair) bool {
 		return bytes.Compare(i.Key, j.Key) < 0
 	})
 
-	w.kvStore, err = Create(w.ctx, dataWriter, statWriter)
+	w.kvStore, err = Create(w.ctx, dataWriter)
 	w.kvStore.rc = w.engine.rc
 
+	var size uint64
 	for i := 0; i < len(w.writeBatch); i++ {
-		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val)
+		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val, w.writerID, w.currentSeq)
 		if err != nil {
 			return err
 		}
+		size += uint64(len(w.writeBatch[i].Key)) + uint64(len(w.writeBatch[i].Val))
 	}
 
-	if w.engine.rc.currProp.Keys > 0 {
-		newProp := *w.engine.rc.currProp
-		w.engine.rc.props = append(w.engine.rc.props, &newProp)
-	}
-	_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
-	if err != nil {
-		return err
-	}
+	//if w.engine.rc.currProp.Keys > 0 {
+	//	newProp := *w.engine.rc.currProp
+	//	w.engine.rc.props = append(w.engine.rc.props, &newProp)
+	//}
+	//_, err = statWriter.Write(w.ctx, w.engine.rc.Encode())
+	//if err != nil {
+	//	return err
+	//}
+	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key, size)
 
-	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key)
-	w.engine.rc.reset()
-
+	w.writeBatch = w.writeBatch[:0]
+	w.kvBuffer.Reset()
+	w.batchSize = 0
 	metrics.GlobalSortSharedDiskRate.WithLabelValues("write").Observe(10)
 	return nil
 }
 
-func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, storage.ExternalFileWriter, error) {
+func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, error) {
 	dataPath := filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq))
-	statPath := filepath.Join(w.filenamePrefix+"_stat", strconv.Itoa(w.currentSeq))
 	dataWriter, err := w.exStorage.Create(w.ctx, dataPath)
 	logutil.BgLogger().Debug("new data writer", zap.Any("name", dataPath))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	statWriter, err := w.exStorage.Create(w.ctx, statPath)
-	logutil.BgLogger().Debug("new stat writer", zap.Any("name", statPath))
-	if err != nil {
-		return nil, nil, err
-	}
-	return dataWriter, statWriter, nil
+
+	return dataWriter, nil
 }
 
 func PrettyFileNames(files []string) []string {

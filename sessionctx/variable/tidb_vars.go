@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/tidb/util/memory"
 	"github.com/pingcap/tidb/util/paging"
 	"github.com/pingcap/tidb/util/size"
+	"github.com/pingcap/tidb/util/tiflash"
 	"github.com/pingcap/tidb/util/tiflashcompute"
 	"go.uber.org/atomic"
 )
@@ -274,6 +275,10 @@ const (
 
 	// TiDBUseAlloc indicates whether the last statement used chunk alloc
 	TiDBUseAlloc = "last_sql_use_alloc"
+
+	// TiDBExplicitRequestSourceType indicates the source of the request, it's a complement of RequestSourceType.
+	// The value maybe "lightning", "br", "dumpling" etc.
+	TiDBExplicitRequestSourceType = "tidb_request_source_type"
 )
 
 // TiDB system variable names that both in session and global scope.
@@ -882,6 +887,9 @@ const (
 	// TiDBOptFixControl makes the user able to control some details of the optimizer behavior.
 	TiDBOptFixControl = "tidb_opt_fix_control"
 
+	// TiFlashReplicaRead is used to set the policy of TiFlash replica read when the query needs the TiFlash engine.
+	TiFlashReplicaRead = "tiflash_replica_read"
+
 	// TiDBLockUnchangedKeys indicates whether to lock duplicate keys in INSERT IGNORE and REPLACE statements,
 	// or unchanged unique keys in UPDATE statements, see PR #42210 and #42713
 	TiDBLockUnchangedKeys = "tidb_lock_unchanged_keys"
@@ -894,6 +902,18 @@ const (
 
 	// TiDBEnableCheckConstraint indicates whether to enable check constraint feature.
 	TiDBEnableCheckConstraint = "tidb_enable_check_constraint"
+
+	// TiDBTempStorageURI indicates where to create temporary files.
+	TiDBTempStorageURI = "tidb_temp_storage_uri"
+
+	TiDBGlobalSortMemQuota = "tidb_global_sort_mem_quota"
+
+	TiDBGlobalSortReadBufferSize = "tidb_global_sort_read_buffer_size"
+	TiDBGlobalSortWriteBatchSize = "tidb_global_sort_write_batch_size"
+	TiDBGlobalSortStatSampleKeys = "tidb_global_sort_stat_sample_keys"
+	TiDBGlobalSortStatSampleSize = "tidb_global_sort_stat_sample_size"
+	TiDBGlobalSortSubtaskCnt     = "tidb_global_sort_subtask_cnt"
+	TiDBGlobalSortS3ChunkSize    = "tidb_global_sort_s3_chunk_size"
 )
 
 // TiDB vars that have only global scope
@@ -1321,7 +1341,7 @@ const (
 	DefTiDBEnableExternalTSRead                       = false
 	DefTiDBEnableReusechunk                           = true
 	DefTiDBUseAlloc                                   = false
-	DefTiDBEnablePlanReplayerCapture                  = false
+	DefTiDBEnablePlanReplayerCapture                  = true
 	DefTiDBIndexMergeIntersectionConcurrency          = ConcurrencyUnset
 	DefTiDBTTLJobEnable                               = true
 	DefTiDBTTLScanBatchSize                           = 500
@@ -1365,11 +1385,19 @@ const (
 	DefAuthenticationLDAPSimpleUserSearchAttr         = "uid"
 	DefAuthenticationLDAPSimpleInitPoolSize           = 10
 	DefAuthenticationLDAPSimpleMaxPoolSize            = 1000
+	DefTiFlashReplicaRead                             = tiflash.AllReplicaStr
 	DefTiDBEnableFastCheckTable                       = true
 	DefRuntimeFilterType                              = "IN"
 	DefRuntimeFilterMode                              = "OFF"
 	DefTiDBLockUnchangedKeys                          = true
 	DefTiDBEnableCheckConstraint                      = false
+	DefTiDBGlobalSortMemoryQuota                      = int(1 * size.GB)
+	DefTiDBGlobalSortReadBufferSize                   = int(64 * size.KB)
+	DefTiDBGlobalSortWriteBatchSize                   = 8 * 1024
+	DefTiDBGlobalSortStatSampleKeys                   = 8 * 1024
+	DefTiDBGlobalSortStatSampleSize                   = int(1 * size.MB)
+	DefTiDBGlobalSortSubtaskCnt                       = -1
+	DefTiDBGlobalSortS3ChunkSize                      = int(5 * size.MB)
 )
 
 // Process global variables.
@@ -1464,6 +1492,15 @@ var (
 	// It will be initialized to the right value after the first call of `rebuildSysVarCache`
 	EnableResourceControl = atomic.NewBool(false)
 	EnableCheckConstraint = atomic.NewBool(DefTiDBEnableCheckConstraint)
+
+	TempStorageURI           = atomic.NewString("")
+	GlobalSortMemQuota       = atomic.NewUint64(uint64(DefTiDBGlobalSortMemoryQuota))
+	GlobalSortReadBufferSize = atomic.NewUint64(uint64(DefTiDBGlobalSortReadBufferSize))
+	GlobalSortWriteBatchSize = atomic.NewInt64(DefTiDBGlobalSortWriteBatchSize)
+	GlobalSortStatSampleKeys = atomic.NewInt64(DefTiDBGlobalSortStatSampleKeys)
+	GlobalSortStatSampleSize = atomic.NewUint64(uint64(DefTiDBGlobalSortStatSampleSize))
+	GlobalSortSubtaskCnt     = atomic.NewInt64(DefTiDBGlobalSortSubtaskCnt)
+	GlobalSortS3ChunkSize    = atomic.NewUint64(uint64(DefTiDBGlobalSortS3ChunkSize))
 )
 
 var (

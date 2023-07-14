@@ -55,6 +55,7 @@ type BackendCtx interface {
 	GetCheckpointManager() *CheckpointManager
 
 	GetBackend() backend.Backend
+	EngineLoaded(indexID int64) bool
 }
 
 // FlushMode is used to control how to flush.
@@ -210,17 +211,17 @@ func (bc *litBackendCtx) Flush(indexID int64, mode FlushMode) (flushed, imported
 		if err != nil {
 			return true, false, err
 		}
-		logutil.BgLogger().Info("[ddl] acquire distributed flush lock success", zap.Int64("jobID", bc.jobID))
+		logutil.BgLogger().Info("acquire distributed flush lock success", zap.String("category", "ddl"), zap.Int64("jobID", bc.jobID))
 		defer func() {
 			err = mu.Unlock(bc.ctx)
 			if err != nil {
-				logutil.BgLogger().Warn("[ddl] release distributed flush lock error", zap.Error(err), zap.Int64("jobID", bc.jobID))
+				logutil.BgLogger().Warn("release distributed flush lock error", zap.String("category", "ddl"), zap.Error(err), zap.Int64("jobID", bc.jobID))
 			} else {
-				logutil.BgLogger().Info("[ddl] release distributed flush lock success", zap.Int64("jobID", bc.jobID))
+				logutil.BgLogger().Info("release distributed flush lock success", zap.String("category", "ddl"), zap.Int64("jobID", bc.jobID))
 			}
 			err = se.Close()
 			if err != nil {
-				logutil.BgLogger().Warn("[ddl] close session error", zap.Error(err))
+				logutil.BgLogger().Warn("close session error", zap.String("category", "ddl"), zap.Error(err))
 			}
 		}()
 	}
@@ -294,4 +295,10 @@ func (bc *litBackendCtx) GetCheckpointManager() *CheckpointManager {
 // GetBackend returns the underlying backend.
 func (bc *litBackendCtx) GetBackend() backend.Backend {
 	return bc.backend
+}
+
+// EngineLoaded returns true if the engine is loaded.
+func (bc *litBackendCtx) EngineLoaded(indexID int64) bool {
+	_, ok := bc.Load(indexID)
+	return ok
 }
