@@ -151,7 +151,7 @@ func (b *Buffer) addBuf() {
 	} else {
 		buf := b.pool.acquire()
 		b.bufs = append(b.bufs, buf)
-		logutil.BgLogger().Warn("addBuf", zap.Int("len", len(b.bufs)))
+		logutil.BgLogger().Warn("addBuf", zap.Int("len", len(b.bufs)), zap.Any("buf", len(buf)))
 		b.curBuf = buf
 		b.curBufIdx = len(b.bufs) - 1
 	}
