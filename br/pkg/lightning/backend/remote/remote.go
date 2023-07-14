@@ -245,12 +245,7 @@ func (remote *Backend) SetRange(ctx context.Context, start, end kv.Key, dataFile
 func (remote *Backend) ImportEngine(ctx context.Context, engineUUID uuid.UUID, regionSplitSize, regionSplitKeys int64) error {
 	switch remote.phase {
 	case PhaseUpload:
-		for _, w := range remote.mu.writers {
-			_, err := w.Close(ctx)
-			if err != nil {
-				return err
-			}
-		}
+		// Do nothing for uploading stage.
 		return nil
 	case PhaseImport:
 		if len(remote.startKey) == 0 {
@@ -362,6 +357,16 @@ func (remote *Backend) handleWriterSummary(s *sharedisk.WriterSummary) {
 		remote.mu.maxKey = s.Max
 	}
 	remote.mu.totalSize += s.TotalSize
+}
+
+func (remote *Backend) CloseWriters(ctx context.Context) error {
+	for _, w := range remote.mu.writers {
+		_, err := w.Close(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (remote *Backend) GetSummary() (min, max kv.Key, totalSize uint64) {
