@@ -455,8 +455,8 @@ func GenerateSchedulerNodes(ctx context.Context) ([]*infosync.ServerInfo, error)
 
 	serverNodes := make([]*infosync.ServerInfo, 0, len(serverInfos))
 	for _, serverInfo := range serverInfos {
+		logutil.BgLogger().Info("labels", zap.Any("serverInfo", serverInfo))
 		if v, ok := serverInfo.Labels["tidb_role"]; ok {
-			logutil.BgLogger().Info("tidb role", zap.Any("role", v))
 			if v == "ddl_worker" {
 				serverNodes = append(serverNodes, serverInfo)
 			}
