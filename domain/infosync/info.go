@@ -1025,6 +1025,7 @@ func getServerInfo(id string, serverIDGetter func() uint64) *ServerInfo {
 		Labels:         cfg.Labels,
 		ServerIDGetter: serverIDGetter,
 	}
+	logutil.BgLogger().Info("ywq test label", zap.Any("labels", cfg.Labels))
 	info.Version = mysql.ServerVersion
 	info.GitHash = versioninfo.TiDBGitHash
 
