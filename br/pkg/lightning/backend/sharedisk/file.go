@@ -135,3 +135,11 @@ func (p *FilePathHandle) ForEach(f func(writerID, seq int, path string)) {
 		}
 	}
 }
+
+func (p *FilePathHandle) FlatSlice() []string {
+	var paths []string
+	p.ForEach(func(writerID, seq int, path string) {
+		paths = append(paths, path)
+	})
+	return paths
+}

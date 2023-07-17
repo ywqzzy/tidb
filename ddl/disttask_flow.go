@@ -209,12 +209,27 @@ func (h *litBackfillFlowHandle) splitSubtaskRanges(ctx context.Context, taskHand
 	if err != nil {
 		return nil, err
 	}
-	splitter, err := bc.GetRangeSplitter(ctx, totalSize, len(instanceIDs))
+	dataFiles, statFiles, err := bc.GetAllRemoteFiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	splitter, err := bc.GetRangeSplitter(ctx, dataFiles, statFiles, totalSize, len(instanceIDs))
 	if err != nil {
 		return nil, err
 	}
 	if splitter == nil {
-		return nil, nil
+		// Stats data files not found.
+		m := &BackfillSubTaskMeta{
+			StartKey:   firstKey,
+			EndKey:     lastKey,
+			DataFiles:  dataFiles.FlatSlice(),
+			StatsFiles: nil,
+		}
+		metaBytes, err := json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{metaBytes}, nil
 	}
 	metaArr := make([][]byte, 0, 16)
 	startKey := firstKey
@@ -264,10 +279,12 @@ func getSummaryFromLastStep(taskHandle dispatcher.TaskHandle, gTaskID int64) (mi
 		if err != nil {
 			return nil, nil, 0, errors.Trace(err)
 		}
-		if len(minKey) == 0 || kv.Key(subtask.MinKey).Cmp(minKey) < 0 {
+		subTaskMin := kv.Key(subtask.MinKey)
+		if len(minKey) == 0 || (len(subTaskMin) > 0 && subTaskMin.Cmp(minKey) < 0) {
 			minKey = subtask.MinKey
 		}
-		if len(maxKey) == 0 || kv.Key(subtask.MaxKey).Cmp(maxKey) > 0 {
+		subTaskMax := kv.Key(subtask.MaxKey)
+		if len(maxKey) == 0 || (len(subTaskMax) > 0 && subTaskMax.Cmp(maxKey) > 0) {
 			maxKey = subtask.MaxKey
 		}
 		totalKVSize += subtask.TotalKVSize

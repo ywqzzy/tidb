@@ -150,12 +150,15 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, memSizeLimit uint64, keyDist int64, sizeDist uint64, writeBatchSize int64,
 	onClose OnCloseFunc) *Writer {
 	engine := NewEngine(sizeDist, uint64(keyDist))
+	pool := membuf.NewPool()
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
 	return &Writer{
 		ctx:            ctx,
 		engine:         engine,
 		memSizeLimit:   memSizeLimit,
 		exStorage:      externalStorage,
+		memBufPool:     pool,
+		kvBuffer:       pool.NewBuffer(),
 		writeBatch:     make([]common.KvPair, 0, writeBatchSize),
 		currentSeq:     0,
 		tikvCodec:      keyspace.CodecV1,
@@ -177,6 +180,7 @@ type Writer struct {
 
 	// bytes buffer for writeBatch
 	memBufPool *membuf.Pool
+	kvBuffer   *membuf.Buffer
 	writeBatch []common.KvPair
 	batchSize  uint64
 
@@ -214,7 +218,10 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 
 	for _, pair := range kvs {
 		w.batchSize += uint64(len(pair.Key) + len(pair.Val))
-		w.writeBatch = append(w.writeBatch, common.KvPair{Key: pair.Key, Val: pair.Val})
+		buf := w.kvBuffer.AllocBytes(len(pair.Key))
+		key := append(buf[:0], pair.Key...)
+		val := w.kvBuffer.AddBytes(pair.Val)
+		w.writeBatch = append(w.writeBatch, common.KvPair{Key: key, Val: val})
 		if w.batchSize >= w.memSizeLimit {
 			if err := w.flushKVs(ctx); err != nil {
 				return err
@@ -233,16 +240,18 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if w.closed {
 		return status(true), nil
 	}
-	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
-		zap.String("minKey", hex.EncodeToString(w.minKey)), zap.String("maxKey", hex.EncodeToString(w.maxKey)))
 	w.closed = true
+	defer w.memBufPool.Destroy()
 	err := w.flushKVs(ctx)
 	if err != nil {
 		return status(false), err
 	}
 
+	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
+		zap.String("minKey", hex.EncodeToString(w.minKey)), zap.String("maxKey", hex.EncodeToString(w.maxKey)))
+
 	// Write the stat information to the storage.
-	if len(w.kvStore.rc.props) > 0 {
+	if w.kvStore != nil && len(w.kvStore.rc.props) > 0 {
 		statPath := filepath.Join(w.filenamePrefix+"_stat", "0")
 		stat, err := w.exStorage.Create(w.ctx, statPath)
 		_, err = stat.Write(w.ctx, w.kvStore.rc.Encode())
@@ -327,6 +336,9 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 
 	var size uint64
 	for i := 0; i < len(w.writeBatch); i++ {
+		//logutil.BgLogger().Info("flush kv", zap.Int("writerID", w.writerID),
+		//	zap.String("key", hex.EncodeToString(w.writeBatch[i].Key)),
+		//	zap.String("val", hex.EncodeToString(w.writeBatch[i].Val)))
 		err = w.kvStore.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val, w.writerID, w.currentSeq)
 		if err != nil {
 			return err
@@ -346,6 +358,7 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[len(w.writeBatch)-1].Key, size)
 
 	w.writeBatch = w.writeBatch[:0]
+	w.kvBuffer.Reset()
 	w.batchSize = 0
 	//w.engine.rc.reset()
 	return nil
