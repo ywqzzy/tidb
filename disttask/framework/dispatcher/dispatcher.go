@@ -463,6 +463,7 @@ func GenerateSchedulerNodes(ctx context.Context) ([]*infosync.ServerInfo, error)
 			serverNodes = append(serverNodes, serverInfo)
 		}
 	}
+	logutil.BgLogger().Info("serverNode len", zap.Any("len", len(serverNodes)))
 	return serverNodes, nil
 }
 
