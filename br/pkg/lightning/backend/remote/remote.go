@@ -350,10 +350,10 @@ func (remote *Backend) handleWriterSummary(s *sharedisk.WriterSummary) {
 	// Store the current writer sequence for the given writer so that
 	// we can remove the correct file in external storage when cleaning up.
 	remote.mu.writersSeq[s.WriterID] = s.Seq
-	if remote.mu.minKey == nil || s.Min.Cmp(remote.mu.minKey) < 0 {
+	if remote.mu.minKey == nil || (len(s.Min) > 0 && s.Min.Cmp(remote.mu.minKey) < 0) {
 		remote.mu.minKey = s.Min
 	}
-	if remote.mu.maxKey == nil || s.Max.Cmp(remote.mu.maxKey) > 0 {
+	if remote.mu.maxKey == nil || (len(s.Max) > 0 && s.Max.Cmp(remote.mu.maxKey) > 0) {
 		remote.mu.maxKey = s.Max
 	}
 	remote.mu.totalSize += s.TotalSize
@@ -375,17 +375,15 @@ func (remote *Backend) GetSummary() (min, max kv.Key, totalSize uint64) {
 	return remote.mu.minKey, remote.mu.maxKey, remote.mu.totalSize
 }
 
-// GetRangeSplitter returns a RangeSplitter that can be used to split the range into multiple subtasks.
-func (remote *Backend) GetRangeSplitter(ctx context.Context, totalKVSize uint64, instanceCnt int) (*sharedisk.RangeSplitter, error) {
+func (remote *Backend) GetAllRemoteFiles(ctx context.Context) (dataFiles sharedisk.FilePathHandle, statFiles []string, err error) {
 	subDir := strconv.Itoa(int(remote.jobID))
-	dataFiles, statsFiles, err := sharedisk.GetAllFileNames(ctx, remote.externalStorage, subDir)
-	if err != nil {
-		return nil, err
-	}
-	if len(statsFiles) == 0 {
-		return nil, nil
-	}
-	mergePropIter, err := sharedisk.NewMergePropIter(ctx, statsFiles, remote.externalStorage)
+	return sharedisk.GetAllFileNames(ctx, remote.externalStorage, subDir)
+}
+
+// GetRangeSplitter returns a RangeSplitter that can be used to split the range into multiple subtasks.
+func (remote *Backend) GetRangeSplitter(ctx context.Context, dataFiles sharedisk.FilePathHandle,
+	statFiles []string, totalKVSize uint64, instanceCnt int) (*sharedisk.RangeSplitter, error) {
+	mergePropIter, err := sharedisk.NewMergePropIter(ctx, statFiles, remote.externalStorage)
 	if err != nil {
 		return nil, err
 	}
@@ -1563,14 +1561,22 @@ func (remote *Backend) writeToTiKV(ctx context.Context, j *regionJob) error {
 		return nil
 	}
 
-	offsets, err := sharedisk.SeekPropsOffsets(ctx, remote.startKey, remote.statsFiles, remote.externalStorage)
-	if err != nil {
-		return errors.Trace(err)
+	var offsets []uint64
+	if len(remote.statsFiles) == 0 {
+		offsets = make([]uint64, len(remote.dataFiles))
+		log.FromContext(ctx).Info("no stats files",
+			zap.String("startKey", hex.EncodeToString(remote.startKey)))
+	} else {
+		offs, err := sharedisk.SeekPropsOffsets(ctx, remote.startKey, remote.statsFiles, remote.externalStorage)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		offsets = offs
+		log.FromContext(ctx).Info("seek props offsets",
+			zap.Uint64s("offsets", offsets),
+			zap.String("startKey", hex.EncodeToString(remote.startKey)),
+			zap.Strings("statsFiles", sharedisk.PrettyFileNames(remote.statsFiles)))
 	}
-	log.FromContext(ctx).Info("SeekPropsOffsets",
-		zap.Uint64s("offsets", offsets),
-		zap.String("startKey", hex.EncodeToString(remote.startKey)),
-		zap.Strings("statsFiles", sharedisk.PrettyFileNames(remote.statsFiles)))
 
 	iter, err := sharedisk.NewMergeIter(ctx, remote.dataFiles, offsets, remote.externalStorage, 64*1024)
 	if err != nil {
