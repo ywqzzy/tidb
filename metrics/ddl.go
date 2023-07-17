@@ -56,12 +56,14 @@ var (
 	DDLOwner          = "owner"
 	DDLCounter        *prometheus.CounterVec
 
-	BackfillTotalCounter       *prometheus.CounterVec
-	BackfillProgressGauge      *prometheus.GaugeVec
-	DDLJobTableDuration        *prometheus.HistogramVec
-	DDLRunningJobCount         *prometheus.GaugeVec
-	GlobalSortSharedDiskRate   *prometheus.HistogramVec
-	GlobalSortSharedDiskIORate *prometheus.GaugeVec
+	BackfillTotalCounter  *prometheus.CounterVec
+	BackfillProgressGauge *prometheus.GaugeVec
+	DDLJobTableDuration   *prometheus.HistogramVec
+	DDLRunningJobCount    *prometheus.GaugeVec
+
+	GlobalSortSharedDiskRate *prometheus.HistogramVec
+	GlobalSortMergeSortRate  *prometheus.HistogramVec
+	AddIndexScanRate         *prometheus.HistogramVec
 )
 
 // InitDDLMetrics initializes defines DDL metrics.
@@ -173,16 +175,24 @@ func InitDDLMetrics() {
 		Subsystem: "global_sort",
 		Name:      "shared_disk_rate",
 		Help:      "shared disk rate",
-		Buckets:   prometheus.ExponentialBuckets(0.001, 2, 20), // 1ms ~ 524s
+		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 20),
 	}, []string{LblType})
 
-	GlobalSortSharedDiskIORate = NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "tidb",
-			Subsystem: "global_sort",
-			Name:      "shared_disk_io_rate",
-			Help:      "shared disk io rate",
-		}, []string{LblType})
+	GlobalSortMergeSortRate = NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "tidb",
+		Subsystem: "global_sort",
+		Name:      "merge_sort_rate",
+		Help:      "merge sort rate",
+		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 20),
+	}, []string{LblType})
+
+	AddIndexScanRate = NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "tidb",
+		Subsystem: "add_index",
+		Name:      "scan_rate",
+		Help:      "scan rate",
+		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 20),
+	}, []string{LblType})
 }
 
 // Label constants.

@@ -34,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/keyspace"
 	tidbkv "github.com/pingcap/tidb/kv"
-	"github.com/pingcap/tidb/metrics"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/tikv/client-go/v2/tikv"
 	"go.uber.org/zap"
@@ -365,7 +364,6 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	w.writeBatch = w.writeBatch[:0]
 	w.kvBuffer.Reset()
 	w.batchSize = 0
-	metrics.GlobalSortSharedDiskRate.WithLabelValues("write").Observe(10)
 	return nil
 }
 

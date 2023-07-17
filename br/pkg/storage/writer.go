@@ -215,14 +215,15 @@ func (u *bufferedWriter) uploadChunk(ctx context.Context) error {
 	u.buf.Reset()
 	startTime := time.Now()
 	_, err := u.writer.Write(ctx, b)
-	metrics.GlobalSortSharedDiskIORate.WithLabelValues("write").Set(float64(len(b)) / 1024.0 / 1024.0 / (float64(time.Since(startTime).Microseconds()) / 1000000.0))
-	log.Info("ywq test", zap.Any("m/s", float64(len(b))/1024.0/1024.0/(float64(time.Since(startTime).Microseconds())/1000000.0)))
+	metrics.GlobalSortSharedDiskRate.WithLabelValues("write").Observe(float64(len(b)) / 1024.0 / 1024.0 / (float64(time.Since(startTime).Microseconds()) / 1000000.0))
+	log.Info("s3 write rate", zap.Any("m/s", float64(len(b))/1024.0/1024.0/(float64(time.Since(startTime).Microseconds())/1000000.0)))
 	return errors.Trace(err)
 }
 
 func (u *bufferedWriter) Close(ctx context.Context) error {
 	u.buf.Close()
 	err := u.uploadChunk(ctx)
+
 	if err != nil {
 		return errors.Trace(err)
 	}
