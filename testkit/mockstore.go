@@ -167,6 +167,8 @@ func (d *DistExecutionContext) GetDomain(idx int) *domain.Domain {
 	return d.domains[idx]
 }
 
+// InitLabels init all domains serverLabel.
+
 // NewDistExecutionContext create DistExecutionContext for testing.
 func NewDistExecutionContext(t testing.TB, serverNum int) *DistExecutionContext {
 	store, err := mockstore.NewMockStore()

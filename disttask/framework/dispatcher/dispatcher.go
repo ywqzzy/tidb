@@ -455,7 +455,13 @@ func GenerateSchedulerNodes(ctx context.Context) ([]*infosync.ServerInfo, error)
 
 	serverNodes := make([]*infosync.ServerInfo, 0, len(serverInfos))
 	for _, serverInfo := range serverInfos {
-		serverNodes = append(serverNodes, serverInfo)
+		if v, ok := serverInfo.Labels["tidb_role"]; ok {
+			if v == "ddl_worker" {
+				serverNodes = append(serverNodes, serverInfo)
+			}
+		} else {
+			serverNodes = append(serverNodes, serverInfo)
+		}
 	}
 	return serverNodes, nil
 }
