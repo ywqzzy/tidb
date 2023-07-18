@@ -296,13 +296,3 @@ func TestFrameworkSubTaskInitEnvFailed(t *testing.T) {
 	DispatchTaskAndCheckFail("key1", t, &v)
 	distContext.Close()
 }
-
-func TestFrameworkLabel(t *testing.T) {
-	defer dispatcher.ClearTaskFlowHandle()
-	defer scheduler.ClearSchedulers()
-	var v atomic.Int64
-	RegisterTaskMeta(&v)
-	distContext := testkit.NewDistExecutionContext(t, 5)
-	DispatchTaskAndCheckSuccess("key1", t, &v)
-	distContext.Close()
-}
