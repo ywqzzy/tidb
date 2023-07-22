@@ -317,10 +317,10 @@ func (remote *Backend) LocalWriter(ctx context.Context, cfg *backend.LocalWriter
 			zap.Uint64("totalSize", s.TotalSize))
 	}
 	prefix := filepath.Join(strconv.Itoa(int(remote.jobID)), engineUUID.String())
-	writer := sharedisk.NewWriter(ctx, remote.externalStorage, prefix,
+	writer, err := sharedisk.NewWriter(ctx, remote.externalStorage, prefix,
 		remote.allocWriterID(), remote.bufferPool, remote.config.MemQuota, remote.config.StatSampleKeys,
-		remote.config.StatSampleSize, remote.config.WriteBatchSize, onClose)
-	return writer, nil
+		remote.config.StatSampleSize, remote.config.WriteBatchSize, false, onClose)
+	return writer, err
 }
 
 func (remote *Backend) allocWriterID() int {

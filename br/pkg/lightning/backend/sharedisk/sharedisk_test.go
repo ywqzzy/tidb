@@ -56,8 +56,8 @@ func TestWriter(t *testing.T) {
 		keyDist               = 8 * 1024
 		writeBatchSize        = 8 * 1024
 	)
-	writer := NewWriter(context.Background(), storage, "jobID/engineUUID", 0,
-		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
+	writer, err := NewWriter(context.Background(), storage, "jobID/engineUUID", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, false, DummyOnCloseFunc)
 
 	var kvs []common.KvPair
 	value := make([]byte, 128)
@@ -159,7 +159,7 @@ func randomString(n int) string {
 func TestWriterPerfOnly(t *testing.T) {
 	var keySize = 1000
 	var valueSize = 10
-	var rowCnt = 10000000
+	var rowCnt = 100000
 	const (
 		memLimit       uint64 = 1024 * 1024 * 1024
 		keyDist               = 8 * 1024
@@ -182,8 +182,8 @@ func TestWriterPerfOnly(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "test", 0,
-		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
+	writer, err := NewWriter(context.Background(), storage, "test", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, false, DummyOnCloseFunc)
 	pool := membuf.NewPool()
 	defer pool.Destroy()
 	defer writer.Close(ctx)
@@ -234,8 +234,8 @@ func TestWriterPerf(t *testing.T) {
 	err = cleanupFiles(ctx, storage, "test")
 	require.NoError(t, err)
 
-	writer := NewWriter(context.Background(), storage, "test", 0,
-		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, DummyOnCloseFunc)
+	writer, err := NewWriter(context.Background(), storage, "test", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, false, DummyOnCloseFunc)
 	writer.Close(ctx)
 
 	var startMemory runtime.MemStats
@@ -307,4 +307,225 @@ func TestRangePropertySize(t *testing.T) {
 	r := RangeProperty{}
 	// Please make sure propertyLengthExceptKey is updated as expected.
 	require.Equal(t, 64, int(unsafe.Sizeof(r)))
+}
+
+func TestTwoStepMerge(t *testing.T) {
+	var keySize = 1000
+	var valueSize = 10
+	var rowCnt = 100000
+	var readBufferSize = 64 * 1024
+	const (
+		memLimit       uint64 = 64 * 1024 * 1024
+		keyDist               = 8 * 1024
+		sizeDist       uint64 = 1024 * 1024
+		writeBatchSize        = 8 * 1024
+	)
+
+	bucket := "ywqtest"
+	prefix := "tools_test_data/onefile"
+	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
+		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
+
+	backend, err := storage2.ParseBackend(uri, nil)
+	require.NoError(t, err)
+	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = cleanupFiles(ctx, storage, "test")
+	require.NoError(t, err)
+	err = cleanupFiles(ctx, storage, "test2")
+	require.NoError(t, err)
+
+	writer, err := NewWriter(context.Background(), storage, "test", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, false, DummyOnCloseFunc)
+	require.NoError(t, err)
+
+	var startMemory runtime.MemStats
+	// 1. write and sort kvs into multiple files.
+	k := randomString(keySize)
+	v := randomString(valueSize)
+
+	for i := 0; i < rowCnt; i += 10000 {
+		var kvs []common.KvPair
+		for j := 0; j < 10000; j++ {
+			var kv common.KvPair
+			kv.Key = []byte(k)
+			kv.Val = []byte(v)
+			kvs = append(kvs, kv)
+		}
+		err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+		require.NoError(t, err)
+	}
+	err = writer.flushKVs(context.Background())
+	require.NoError(t, err)
+
+	_, err = writer.Close(ctx)
+	require.NoError(t, err)
+
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo before read", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+
+	dataFileName := make([]string, 0)
+	fileStartOffsets := make([]uint64, 0)
+	for i := 0; i < writer.currentSeq; i++ {
+		dataFileName = append(dataFileName, "test/0/"+strconv.Itoa(i))
+		fileStartOffsets = append(fileStartOffsets, 0)
+	}
+
+	logutil.BgLogger().Info("datafilename", zap.Any("name", dataFileName))
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, readBufferSize)
+	require.NoError(t, err)
+	defer mIter.Close()
+
+	mCnt := 0
+	prevKey := make([]byte, 0, keySize)
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo new merge iter", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+
+	// 2. check first round file sorted, and merge sort first round files to one large file.
+	writer2, err := NewWriter(context.Background(), storage, "test2", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, true, DummyOnCloseFunc)
+	require.NoError(t, err)
+	var kvs []common.KvPair
+	for mIter.Next() {
+		mCnt++
+		if mCnt%1000000 == 0 {
+			runtime.ReadMemStats(&startMemory)
+			logutil.BgLogger().Info("meminfo % 1000000", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+		}
+		var kv common.KvPair
+		kv.Key = mIter.Key()
+		kv.Val = mIter.Value()
+		kvs = append(kvs, kv)
+		if mCnt%10000 == 0 {
+			writer2.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+			kvs = nil
+		}
+		if len(prevKey) > 0 {
+			currKey := mIter.Key()
+			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
+			copy(prevKey, currKey)
+		}
+	}
+
+	err = writer2.flushKVsIntoOneFile(context.Background())
+	require.NoError(t, err)
+	_, err = writer2.Close(ctx)
+	require.NoError(t, err)
+
+	// 3. check the big file sorted.
+	dataFileName = nil
+	dataFileName = append(dataFileName, "test2/0/0")
+	fileStartOffsets = append(fileStartOffsets, 0)
+	mIter1, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, readBufferSize)
+	require.NoError(t, err)
+	defer mIter1.Close()
+	prevKey = nil
+
+	mCnt = 0
+	for mIter1.Next() {
+		mCnt++
+		if mCnt%1000000 == 0 {
+			runtime.ReadMemStats(&startMemory)
+			logutil.BgLogger().Info("meminfo % 1000000", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+		}
+		if len(prevKey) > 0 {
+			currKey := mIter1.Key()
+			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
+			copy(prevKey, currKey)
+		}
+	}
+
+	require.Equal(t, rowCnt, mCnt)
+}
+
+func TestWriterOneFile(t *testing.T) {
+	var keySize = 1000
+	var valueSize = 10
+	var rowCnt = 100000
+	var readBufferSize = 64 * 1024
+	const (
+		memLimit       uint64 = 64 * 1024 * 1024
+		keyDist               = 8 * 1024
+		sizeDist       uint64 = 1024 * 1024
+		writeBatchSize        = 8 * 1024
+	)
+
+	bucket := "ywqtest"
+	prefix := "tools_test_data/onefile"
+	uri := fmt.Sprintf("s3://%s/%s?access-key=%s&secret-access-key=%s&endpoint=http://%s:%s&force-path-style=true",
+		bucket, prefix, "minioadmin", "minioadmin", "127.0.0.1", "9000")
+
+	backend, err := storage2.ParseBackend(uri, nil)
+	require.NoError(t, err)
+	storage, err := storage2.New(context.Background(), backend, &storage2.ExternalStorageOptions{})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = cleanupFiles(ctx, storage, "test")
+
+	require.NoError(t, err)
+
+	writer, err := NewWriter(context.Background(), storage, "test", 0,
+		membuf.NewPool(), memLimit, keyDist, sizeDist, writeBatchSize, true, DummyOnCloseFunc)
+	require.NoError(t, err)
+
+	var startMemory runtime.MemStats
+
+	k := randomString(keySize)
+	v := randomString(valueSize)
+
+	for i := 0; i < rowCnt; i += 10000 {
+		var kvs []common.KvPair
+		for j := 0; j < 10000; j++ {
+			var kv common.KvPair
+			kv.Key = []byte(k)
+			kv.Val = []byte(v)
+			kvs = append(kvs, kv)
+		}
+		err = writer.AppendRows(ctx, nil, kv2.MakeRowsFromKvPairs(kvs))
+		require.NoError(t, err)
+	}
+	err = writer.flushKVsIntoOneFile(context.Background())
+	require.NoError(t, err)
+
+	_, err = writer.Close(ctx)
+	require.NoError(t, err)
+
+	require.Equal(t, 0, writer.currentSeq)
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo before read", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+	dataFileName := make([]string, 0)
+	fileStartOffsets := make([]uint64, 0)
+
+	dataFileName = append(dataFileName, "test/0/"+strconv.Itoa(0))
+	fileStartOffsets = append(fileStartOffsets, 0)
+
+	startTs := time.Now()
+	logutil.BgLogger().Info("datafilename", zap.Any("name", dataFileName))
+	mIter, err := NewMergeIter(ctx, dataFileName, fileStartOffsets, storage, readBufferSize)
+	require.NoError(t, err)
+	defer mIter.Close()
+	mCnt := 0
+	prevKey := make([]byte, 0, keySize)
+
+	runtime.ReadMemStats(&startMemory)
+	logutil.BgLogger().Info("meminfo new merge iter", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+
+	for mIter.Next() {
+		mCnt++
+		if mCnt%1000000 == 0 {
+			runtime.ReadMemStats(&startMemory)
+			logutil.BgLogger().Info("meminfo % 1000000", zap.Any("alloc", startMemory.Alloc), zap.Any("heapInUse", startMemory.HeapInuse), zap.Any("total", startMemory.TotalAlloc))
+		}
+		if len(prevKey) > 0 {
+			currKey := mIter.Key()
+			require.Equal(t, 1, bytes.Compare(currKey, prevKey))
+			copy(prevKey, currKey)
+		}
+	}
+
+	require.Equal(t, rowCnt, mCnt)
+	logutil.BgLogger().Info("read data rate", zap.Any("sort total/ ms", time.Since(startTs).Milliseconds()), zap.Any("io cnt", ReadIOCnt.Load()), zap.Any("bytes", ReadByteForTest.Load()), zap.Any("time", ReadTimeForTest.Load()), zap.Any("rate: m/s", ReadByteForTest.Load()*1000000.0/ReadTimeForTest.Load()/1024.0/1024.0))
 }

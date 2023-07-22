@@ -3,6 +3,9 @@ package storage
 import (
 	"bytes"
 	"context"
+	"io"
+	"time"
+
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/snappy"
 	"github.com/klauspost/compress/zstd"
@@ -10,8 +13,6 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/metrics"
 	"go.uber.org/zap"
-	"io"
-	"time"
 )
 
 // CompressType represents the type of compression.
@@ -215,7 +216,7 @@ func (u *bufferedWriter) uploadChunk(ctx context.Context) error {
 	startTime := time.Now()
 	_, err := u.writer.Write(ctx, b)
 	metrics.GlobalSortSharedDiskRate.WithLabelValues("write").Observe(float64(len(b)) / 1024.0 / 1024.0 / (float64(time.Since(startTime).Microseconds()) / 1000000.0))
-	//log.Info("s3 write rate", zap.Any("m/s", float64(len(b))/1024.0/1024.0/(float64(time.Since(startTime).Microseconds())/1000000.0)))
+	log.Info("s3 write rate", zap.Any("m/s", float64(len(b))/1024.0/1024.0/(float64(time.Since(startTime).Microseconds())/1000000.0)))
 	return errors.Trace(err)
 }
 

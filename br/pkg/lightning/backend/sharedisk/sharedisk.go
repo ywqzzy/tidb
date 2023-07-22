@@ -149,11 +149,12 @@ func DummyOnCloseFunc(*WriterSummary) {}
 
 func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 	prefix string, writerID int, bufferPool *membuf.Pool,
-	memSizeLimit uint64, keyDist int64, sizeDist uint64, writeBatchSize int64,
-	onClose OnCloseFunc) *Writer {
+	memSizeLimit uint64, keyDist int64, sizeDist uint64, writeBatchSize int64, oneFile bool,
+	onClose OnCloseFunc) (*Writer, error) {
 	engine := NewEngine(sizeDist, uint64(keyDist))
 	filePrefix := filepath.Join(prefix, strconv.Itoa(writerID))
-	return &Writer{
+
+	res := &Writer{
 		ctx:            ctx,
 		engine:         engine,
 		memSizeLimit:   memSizeLimit,
@@ -167,7 +168,22 @@ func NewWriter(ctx context.Context, externalStorage storage.ExternalStorage,
 		kvStore:        nil,
 		onClose:        onClose,
 		closed:         false,
+		oneFile:        oneFile,
 	}
+
+	if oneFile {
+		dataWriter, err := res.createStorageWriter()
+		if err != nil {
+			return nil, err
+		}
+		res.dataWriterForOneFile = dataWriter
+		res.kvStoreForOneFile, err = Create(res.ctx, dataWriter)
+		if err != nil {
+			return nil, err
+		}
+		res.kvStoreForOneFile.rc = res.engine.rc
+	}
+	return res, nil
 }
 
 // Writer is used to write data into external storage.
@@ -195,6 +211,11 @@ type Writer struct {
 	totalSize      uint64
 
 	kvStore *KeyValueStore
+
+	// check if write data into one file.
+	oneFile              bool
+	dataWriterForOneFile storage.ExternalFileWriter
+	kvStoreForOneFile    *KeyValueStore
 }
 
 // AppendRows appends rows to the external storage.
@@ -203,10 +224,6 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 	if len(kvs) == 0 {
 		return nil
 	}
-
-	//if w.engine.closed.Load() {
-	//	return errorEngineClosed
-	//}
 
 	for i := range kvs {
 		kvs[i].Key = w.tikvCodec.EncodeKey(kvs[i].Key)
@@ -227,8 +244,14 @@ func (w *Writer) AppendRows(ctx context.Context, columnNames []string, rows enco
 			w.writeBatch[w.batchCount-1] = common.KvPair{Key: key, Val: val}
 		}
 		if w.batchSize >= w.memSizeLimit {
-			if err := w.flushKVs(ctx); err != nil {
-				return err
+			if w.oneFile {
+				if err := w.flushKVsIntoOneFile(ctx); err != nil {
+					return err
+				}
+			} else {
+				if err := w.flushKVs(ctx); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -246,9 +269,23 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	}
 	w.closed = true
 	defer w.kvBuffer.Destroy()
-	err := w.flushKVs(ctx)
-	if err != nil {
-		return status(false), err
+	if w.oneFile {
+		err := w.flushKVsIntoOneFile(ctx)
+		if err != nil {
+			logutil.BgLogger().Error("flush kvs into one file failed", zap.Error(err))
+		}
+		err = w.dataWriterForOneFile.Close(ctx)
+		if err != nil {
+			logutil.BgLogger().Error("close data writer failed", zap.Error(err))
+		}
+		if err != nil {
+			return status(false), err
+		}
+	} else {
+		err := w.flushKVs(ctx)
+		if err != nil {
+			return status(false), err
+		}
 	}
 
 	logutil.BgLogger().Info("close writer", zap.Int("writerID", w.writerID),
@@ -258,6 +295,9 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 	if w.kvStore != nil && len(w.kvStore.rc.props) > 0 {
 		statPath := filepath.Join(w.filenamePrefix+"_stat", "0")
 		stat, err := w.exStorage.Create(w.ctx, statPath)
+		if err != nil {
+			return status(false), err
+		}
 		_, err = stat.Write(w.ctx, w.kvStore.rc.Encode())
 		if err != nil {
 			return status(false), err
@@ -267,6 +307,23 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 			return status(false), err
 		}
 	}
+
+	if w.kvStoreForOneFile != nil && len(w.kvStoreForOneFile.rc.props) > 0 {
+		statPath := filepath.Join(w.filenamePrefix+"_stat", "0")
+		stat, err := w.exStorage.Create(w.ctx, statPath)
+		if err != nil {
+			return status(false), err
+		}
+		_, err = stat.Write(w.ctx, w.kvStoreForOneFile.rc.Encode())
+		if err != nil {
+			return status(false), err
+		}
+		err = stat.Close(w.ctx)
+		if err != nil {
+			return status(false), err
+		}
+	}
+
 	w.writeBatch = nil
 
 	w.onClose(&WriterSummary{
@@ -277,6 +334,39 @@ func (w *Writer) Close(ctx context.Context) (backend.ChunkFlushStatus, error) {
 		TotalSize: w.totalSize,
 	})
 	return status(true), nil
+}
+
+func (w *Writer) flushKVsIntoOneFile(ctx context.Context) error {
+	logutil.BgLogger().Info("debug flush into one file", zap.Any("len", len(w.writeBatch)), zap.Any("cap", cap(w.writeBatch)))
+	if w.batchCount == 0 {
+		return nil
+	}
+
+	ts := time.Now()
+	var saveBytes uint64
+	var err error
+
+	slices.SortFunc(w.writeBatch[:w.batchCount], func(i, j common.KvPair) bool {
+		return bytes.Compare(i.Key, j.Key) < 0
+	})
+	var size uint64
+	for i := 0; i < w.batchCount; i++ {
+		// logutil.BgLogger().Info("flush kv", zap.Int("writerID", w.writerID),
+		// 	zap.String("key", hex.EncodeToString(w.writeBatch[i].Key)),
+		// 	zap.String("val", hex.EncodeToString(w.writeBatch[i].Val)))
+		err = w.kvStoreForOneFile.AddKeyValue(w.writeBatch[i].Key, w.writeBatch[i].Val, w.writerID, w.currentSeq)
+		if err != nil {
+			return err
+		}
+		size += uint64(len(w.writeBatch[i].Key)) + uint64(len(w.writeBatch[i].Val))
+	}
+	w.recordMinMax(w.writeBatch[0].Key, w.writeBatch[w.batchCount-1].Key, size)
+	w.batchCount = 0
+	w.kvBuffer.Reset()
+	saveBytes = w.batchSize
+	w.batchSize = 0
+	logutil.BgLogger().Info("flush kv into one", zap.Any("time", time.Since(ts)), zap.Any("bytes", saveBytes), zap.Any("m/s", float64(saveBytes)/1024.0/1024.0/time.Since(ts).Seconds()))
+	return nil
 }
 
 func (w *Writer) recordMinMax(newMin, newMax tidbkv.Key, size uint64) {
@@ -347,6 +437,9 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 	ts = time.Now()
 
 	w.kvStore, err = Create(w.ctx, dataWriter)
+	if err != nil {
+		return err
+	}
 	w.kvStore.rc = w.engine.rc
 
 	var size uint64
@@ -381,11 +474,10 @@ func (w *Writer) flushKVs(ctx context.Context) error {
 func (w *Writer) createStorageWriter() (storage.ExternalFileWriter, error) {
 	dataPath := filepath.Join(w.filenamePrefix, strconv.Itoa(w.currentSeq))
 	dataWriter, err := w.exStorage.Create(w.ctx, dataPath)
-	logutil.BgLogger().Debug("new data writer", zap.Any("name", dataPath))
+	logutil.BgLogger().Info("new data writer", zap.Any("name", dataPath))
 	if err != nil {
 		return nil, err
 	}
-
 	return dataWriter, nil
 }
 
