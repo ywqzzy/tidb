@@ -223,7 +223,7 @@ func (d *dispatcher) probeTask(taskID int64) (gTask *proto.Task, finished bool, 
 		if len(subTaskErrs) > 0 {
 			return gTask, false, subTaskErrs
 		}
-		// check subtasks pending or running.
+
 		cnt, err := d.taskMgr.GetSubtaskInStatesCnt(gTask.ID, proto.TaskStatePending, proto.TaskStateRunning)
 		if err != nil {
 			logutil.BgLogger().Warn("check task failed", zap.Int64("task ID", gTask.ID), zap.Error(err))
@@ -274,7 +274,6 @@ func (d *dispatcher) detectTask(taskID int64) {
 					zap.Int64("task-id", gTask.ID), zap.String("state", gTask.State))
 				break
 			}
-
 			err := d.processFlow(gTask, errs)
 			if err == nil && gTask.IsFinished() {
 				logutil.BgLogger().Info("detect task, task is finished",
