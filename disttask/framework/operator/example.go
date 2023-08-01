@@ -27,18 +27,55 @@ func (ss *SimpleDataSource) Read() (any, error) {
 	return &DataChunk{1}, nil
 }
 
+func (ss *SimpleDataSource) Display() string {
+	return "SimpleDataSource"
+}
+
+type SimpleDataChannel struct {
+	data   any
+	isFull bool
+}
+
+func (cs *SimpleDataChannel) IsFull() bool {
+	return cs.isFull
+}
+
+func (cs *SimpleDataChannel) Write(data any) error {
+	cs.isFull = true
+	cs.data = data
+	return nil
+}
+
+func (ss *SimpleDataChannel) Display() string {
+	return "SimpleDataChannel"
+}
+
+func (cs *SimpleDataChannel) HasNext() bool {
+	return cs.isFull
+}
+
+func (cs *SimpleDataChannel) Read() (any, error) {
+	cs.isFull = false
+	return cs.data, nil
+}
+
 type SimpleDataSink struct {
 	Res int
+	cnt int
 }
 
-func (sk *SimpleDataSink) IsFull() bool {
-	return sk.Res > 20
+func (sks *SimpleDataSink) IsFull() bool {
+	return sks.cnt > 10
 }
 
-func (sk *SimpleDataSink) Write(data any) error {
+func (sks *SimpleDataSink) Write(data any) error {
 	innerVal := data.(*DataChunk)
-	sk.Res += innerVal.data.(int)
+	sks.Res += innerVal.data.(int)
 	return nil
+}
+
+func (ss *SimpleDataSink) Display() string {
+	return "SimpleDataSink"
 }
 
 type SimpleOperatorImpl struct {
@@ -58,4 +95,8 @@ func (oi *SimpleOperatorImpl) Execute(data any) error {
 
 func (oi *SimpleOperatorImpl) PostExecute(data any) error {
 	return nil
+}
+
+func (oi *SimpleOperatorImpl) Display() string {
+	return "SimpleOperator"
 }

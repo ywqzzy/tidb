@@ -17,25 +17,43 @@ package operator
 import (
 	"testing"
 
+	"github.com/pingcap/tidb/util/logutil"
 	"github.com/stretchr/testify/require"
 )
 
-func NewSimpleOperator() *Operator {
-	return &Operator{
-		&SimpleDataSource{0},
-		&SimpleDataSink{0, 0},
+func NewSimplePipeline1() *Pipeline {
+	source1 := &SimpleDataSource{0}
+	channel := &SimpleDataChannel{nil, false}
+	sink2 := &SimpleDataSink{0, 0}
+
+	op1 := &Operator{
+		source1,
+		channel,
 		&SimpleOperatorImpl{},
 	}
+	op2 := &Operator{
+		channel,
+		sink2,
+		&SimpleOperatorImpl{},
+	}
+
+	pipeline := &Pipeline{}
+	pipeline.AddOperator(op1)
+	pipeline.AddOperator(op2)
+
+	return pipeline
 }
 
-func TestOperatorBasic(t *testing.T) {
-	op := NewSimpleOperator()
+func TestPipelineBasic(t *testing.T) {
+	pipeline := NewSimplePipeline1()
 	for {
-		hasNext, err := op.Next()
+		hasNext, err := pipeline.Execute()
 		require.NoError(t, err)
 		if !hasNext {
 			break
 		}
 	}
-	require.Equal(t, 20, op.GetSink().(*SimpleDataSink).Res)
+	// check 30
+	require.Equal(t, 30, pipeline.LastOperator().GetSink().(*SimpleDataSink).Res)
+	logutil.BgLogger().Info(pipeline.Display())
 }

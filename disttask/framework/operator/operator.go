@@ -14,25 +14,30 @@
 
 package operator
 
+import "errors"
+
 type OperatorImpl interface {
 	PreExecute(data any) error
 	Execute(data any) error
 	PostExecute(data any) error
+	Display() string
 }
 
 type DataSource interface {
 	HasNext() bool
 	Read() (any, error)
+	Display() string
 }
 
 type DataSink interface {
 	IsFull() bool
 	Write(data any) error
+	Display() string
 }
 
 type Operator struct {
 	source DataSource
-	Sink   DataSink
+	sink   DataSink
 	impl   OperatorImpl
 }
 
@@ -41,6 +46,9 @@ type DataChunk struct {
 }
 
 func (o *Operator) PreExecute(data any) error {
+	if o.source == nil || o.sink == nil || o.impl == nil {
+		return errors.New("operator init failed")
+	}
 	return o.impl.PreExecute(data)
 }
 
@@ -57,21 +65,46 @@ func (o *Operator) ReadFromSource() (any, error) {
 }
 
 func (o *Operator) WriteToSink(data any) error {
-	return o.Sink.Write(data)
+	return o.sink.Write(data)
+}
+
+func (o *Operator) GetSink() DataSink {
+	return o.sink
 }
 
 func (o *Operator) HasNext() bool {
 	return o.source.HasNext()
 }
 
-func ExecuteOperator(o *Operator) {
-	for o.HasNext() {
+func (o *Operator) Display() string {
+	return o.source.Display() + "-->" + o.impl.Display() + "-->" + o.sink.Display()
+}
+
+// bool hasData
+func (o *Operator) Next() (bool, error) {
+	if o.HasNext() {
 		data, _ := o.ReadFromSource()
-		o.PreExecute(data)
-		o.Execute(data)
-		o.PostExecute(data)
-		if !o.Sink.IsFull() {
-			o.WriteToSink(data)
+		err := o.PreExecute(data)
+		if err != nil {
+			return false, err
 		}
+		err = o.Execute(data)
+		if err != nil {
+			return false, err
+		}
+		err = o.PostExecute(data)
+		if err != nil {
+			return false, err
+		}
+		if !o.sink.IsFull() {
+			err = o.WriteToSink(data)
+			if err != nil {
+				return false, err
+			}
+		} else {
+			return false, nil
+		}
+		return true, nil
 	}
+	return false, nil
 }

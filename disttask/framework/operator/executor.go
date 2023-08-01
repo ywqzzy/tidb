@@ -14,28 +14,9 @@
 
 package operator
 
-import (
-	"testing"
+import "github.com/pingcap/tidb/resourcemanager/pool/spool"
 
-	"github.com/stretchr/testify/require"
-)
-
-func NewSimpleOperator() *Operator {
-	return &Operator{
-		&SimpleDataSource{0},
-		&SimpleDataSink{0, 0},
-		&SimpleOperatorImpl{},
-	}
-}
-
-func TestOperatorBasic(t *testing.T) {
-	op := NewSimpleOperator()
-	for {
-		hasNext, err := op.Next()
-		require.NoError(t, err)
-		if !hasNext {
-			break
-		}
-	}
-	require.Equal(t, 20, op.GetSink().(*SimpleDataSink).Res)
+type SubTaskExecutor struct {
+	pipeline []*Pipeline
+	gPool    *spool.Pool
 }
