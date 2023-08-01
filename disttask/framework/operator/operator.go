@@ -14,8 +14,6 @@
 
 package operator
 
-import "github.com/pingcap/tidb/util/logutil"
-
 type OperatorImpl interface {
 	PreExecute(data any) error
 	Execute(data any) error
@@ -23,33 +21,34 @@ type OperatorImpl interface {
 }
 
 type DataSource interface {
-	HasNext() (bool, error)
+	HasNext() bool
 	Read() (any, error)
 }
 
 type DataSink interface {
-	IsFull() (bool, error)
+	IsFull() bool
 	Write(data any) error
 }
 
 type Operator struct {
 	source DataSource
-	sink   DataSink
+	Sink   DataSink
 	impl   OperatorImpl
 }
 
+type DataChunk struct {
+	data any
+}
+
 func (o *Operator) PreExecute(data any) error {
-	logutil.BgLogger().Info("pre execute")
 	return o.impl.PreExecute(data)
 }
 
 func (o *Operator) Execute(data any) error {
-	logutil.BgLogger().Info("execute")
 	return o.impl.Execute(data)
 }
 
 func (o *Operator) PostExecute(data any) error {
-	logutil.BgLogger().Info("post execute")
 	return o.impl.PostExecute(data)
 }
 
@@ -58,9 +57,21 @@ func (o *Operator) ReadFromSource() (any, error) {
 }
 
 func (o *Operator) WriteToSink(data any) error {
-	return o.sink.Write(data)
+	return o.Sink.Write(data)
 }
 
-func (o *Operator) HasNext() (bool, error) {
+func (o *Operator) HasNext() bool {
 	return o.source.HasNext()
+}
+
+func ExecuteOperator(o *Operator) {
+	for o.HasNext() {
+		data, _ := o.ReadFromSource()
+		o.PreExecute(data)
+		o.Execute(data)
+		o.PostExecute(data)
+		if !o.Sink.IsFull() {
+			o.WriteToSink(data)
+		}
+	}
 }

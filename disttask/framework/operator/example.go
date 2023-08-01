@@ -14,7 +14,48 @@
 
 package operator
 
-type SimpleOperator struct {
-	source DataSource
-	sink   DataSink
+type SimpleDataSource struct {
+	cnt int
+}
+
+func (ss *SimpleDataSource) HasNext() bool {
+	return ss.cnt < 10
+}
+
+func (ss *SimpleDataSource) Read() (any, error) {
+	ss.cnt++
+	return &DataChunk{1}, nil
+}
+
+type SimpleDataSink struct {
+	Res int
+}
+
+func (sk *SimpleDataSink) IsFull() bool {
+	return sk.Res > 20
+}
+
+func (sk *SimpleDataSink) Write(data any) error {
+	innerVal := data.(*DataChunk)
+	sk.Res += innerVal.data.(int)
+	return nil
+}
+
+type SimpleOperatorImpl struct {
+}
+
+func (oi *SimpleOperatorImpl) PreExecute(data any) error {
+	return nil
+}
+
+func (oi *SimpleOperatorImpl) Execute(data any) error {
+	res := data.(*DataChunk)
+	innerVal := res.data.(int)
+	innerVal++
+	res.data = innerVal
+	return nil
+}
+
+func (oi *SimpleOperatorImpl) PostExecute(data any) error {
+	return nil
 }
