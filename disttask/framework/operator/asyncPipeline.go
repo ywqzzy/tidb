@@ -28,8 +28,10 @@ func (p *AsyncPipeline) AsyncExecute() error {
 
 func (p *AsyncPipeline) Wait() {
 	for _, op := range p.ops {
-		op.Wait()
 		op.Close()
+	}
+	for _, op := range p.ops {
+		op.Wait()
 	}
 }
 

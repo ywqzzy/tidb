@@ -37,6 +37,7 @@ func (aw *asyncWorker) HandleTask(task AsyncChunk) {
 	task.res.res++
 	logutil.BgLogger().Info("handle task", zap.Any("task", task))
 	for aw.sink.IsFull() {
+		logutil.BgLogger().Info("ywq test full")
 		continue
 	}
 	_ = aw.sink.Write(task)
@@ -74,6 +75,9 @@ func (oi *ExampleAsyncOperatorImpl) PreExecute() error {
 	return nil
 }
 
+func (oi *ExampleAsyncOperatorImpl) SetEnd(int) {
+}
+
 func (oi *ExampleAsyncOperatorImpl) Start() {
 	oi.pool.(*AsyncDataChannel[AsyncChunk]).channel.SetCreateWorker(oi.createWorker)
 	oi.pool.(*AsyncDataChannel[AsyncChunk]).channel.Start()
@@ -99,13 +103,14 @@ func (oi *ExampleAsyncOperatorImpl) Close() {}
 
 // SourceFromMemoryAsyncOperatorImpl source not from channel
 type SourceFromMemoryAsyncOperatorImpl struct {
-	memory DataSource
-	pool   *workerpool.WorkerPool[AsyncChunk]
-	sink   DataSink
-	wg     sync.WaitGroup
-	closed bool
-	mu     sync.Mutex
-	cnt    int
+	memory   DataSource
+	pool     *workerpool.WorkerPool[AsyncChunk]
+	sink     DataSink
+	wg       sync.WaitGroup
+	closed   bool
+	mu       sync.Mutex
+	cnt      int
+	finalCnt int
 }
 
 func NewSourceFromMemoryAsyncOperatorImpl() AsyncOperatorImpl {
@@ -145,7 +150,7 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) Start() {
 	oi.wg.Add(1)
 	go func() {
 		for {
-			//logutil.BgLogger().Info("for ?")
+			logutil.BgLogger().Info("for ?")
 			oi.mu.Lock()
 			if oi.memory.HasNext() {
 				data, _ := oi.memory.Read()
@@ -153,8 +158,8 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) Start() {
 				oi.pool.AddTask(data.(AsyncChunk))
 				oi.cnt++
 			}
-			//logutil.BgLogger().Info("is closed", zap.Any("closed", oi.closed))
-			if oi.closed && oi.cnt == 50 {
+			logutil.BgLogger().Info("is closed", zap.Any("closed", oi.closed), zap.Any("cnt", oi.cnt))
+			if oi.closed && oi.cnt == oi.finalCnt {
 				oi.mu.Unlock()
 				oi.wg.Done()
 				return
@@ -167,6 +172,7 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) Start() {
 }
 
 func (oi *SourceFromMemoryAsyncOperatorImpl) Wait() {
+	// ywq todo
 	oi.pool.ReleaseAndWait()
 }
 
@@ -180,6 +186,10 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) PostExecute() error {
 
 func (oi *SourceFromMemoryAsyncOperatorImpl) Display() string {
 	return "AsyncOperator"
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) SetEnd(end int) {
+	oi.finalCnt = end
 }
 
 type SimpleAsyncDataSink struct {
@@ -199,6 +209,7 @@ func (sas *SimpleAsyncDataSink) Write(data any) error {
 	sas.mu.Lock()
 	defer sas.mu.Unlock()
 	innerVal := data.(AsyncChunk)
+	logutil.BgLogger().Info("ywq test write")
 	sas.Res += innerVal.res.res
 	sas.cnt++
 	return nil

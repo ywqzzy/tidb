@@ -77,24 +77,13 @@ func TestPipelineAsync(t *testing.T) {
 func TestPipelineAsync2(t *testing.T) {
 	pipeline, source := NewAsyncPipeline2()
 	pipeline.AsyncExecute()
-
-	//go func() {
-	//	cnt := 0
-	//	for {
-	//		if pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).HasNext() {
-	//			pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Read()
-	//			cnt++
-	//		}
-	//		if cnt == 10000 {
-	//			return
-	//		}
-	//	}
-	//}()
-	for i := 0; i < 50; i++ {
+	taskCnt := 100
+	for i := 0; i < taskCnt; i++ {
 		log.Info("ywq test add task")
 		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
 	}
+	pipeline.LastOperator().SetEnd(taskCnt)
 	pipeline.Wait()
 
-	require.Equal(t, 150, pipeline.LastOperator().GetSink().(*FinalAsyncDataSink).Res)
+	require.Equal(t, taskCnt*4, pipeline.LastOperator().GetSink().(*FinalAsyncDataSink).Res)
 }
