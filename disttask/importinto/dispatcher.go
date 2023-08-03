@@ -487,7 +487,6 @@ func generateImportStepMetas(ctx context.Context, taskMeta *TaskMeta) (subtaskMe
 		if err2 = controller.InitDataFiles(ctx); err2 != nil {
 			return nil, err2
 		}
-
 		engineCheckpoints, err2 := controller.PopulateChunks(ctx)
 		if err2 != nil {
 			return nil, err2

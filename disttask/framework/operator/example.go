@@ -81,7 +81,7 @@ func (ss *SimpleDataSink) Display() string {
 type SimpleOperatorImpl struct {
 }
 
-func (oi *SimpleOperatorImpl) PreExecute(data any) error {
+func (oi *SimpleOperatorImpl) PreExecute() error {
 	return nil
 }
 
@@ -93,7 +93,7 @@ func (oi *SimpleOperatorImpl) Execute(data any) error {
 	return nil
 }
 
-func (oi *SimpleOperatorImpl) PostExecute(data any) error {
+func (oi *SimpleOperatorImpl) PostExecute() error {
 	return nil
 }
 

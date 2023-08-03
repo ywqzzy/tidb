@@ -288,6 +288,8 @@ func (b *backfillSchedulerHandle) SplitSubtask(ctx context.Context, subtask []by
 			break
 		}
 	}
+
+	// ywq todo
 	ingestScheduler.close(false)
 
 	if err := consumer.getResult(); err != nil {

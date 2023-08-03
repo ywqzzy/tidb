@@ -17,9 +17,9 @@ package operator
 import "errors"
 
 type OperatorImpl interface {
-	PreExecute(data any) error
+	PreExecute() error
 	Execute(data any) error
-	PostExecute(data any) error
+	PostExecute() error
 	Display() string
 }
 
@@ -45,19 +45,19 @@ type DataChunk struct {
 	data any
 }
 
-func (o *Operator) PreExecute(data any) error {
+func (o *Operator) PreExecute() error {
 	if o.source == nil || o.sink == nil || o.impl == nil {
 		return errors.New("operator init failed")
 	}
-	return o.impl.PreExecute(data)
+	return o.impl.PreExecute()
 }
 
 func (o *Operator) Execute(data any) error {
 	return o.impl.Execute(data)
 }
 
-func (o *Operator) PostExecute(data any) error {
-	return o.impl.PostExecute(data)
+func (o *Operator) PostExecute() error {
+	return o.impl.PostExecute()
 }
 
 func (o *Operator) ReadFromSource() (any, error) {
@@ -84,7 +84,7 @@ func (o *Operator) Display() string {
 func (o *Operator) Next() (bool, error) {
 	if o.HasNext() {
 		data, _ := o.ReadFromSource()
-		err := o.PreExecute(data)
+		err := o.PreExecute()
 		if err != nil {
 			return false, err
 		}
@@ -92,7 +92,7 @@ func (o *Operator) Next() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		err = o.PostExecute(data)
+		err = o.PostExecute()
 		if err != nil {
 			return false, err
 		}

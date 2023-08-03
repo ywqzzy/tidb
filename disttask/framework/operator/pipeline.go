@@ -14,7 +14,9 @@
 
 package operator
 
-import "errors"
+import (
+	"errors"
+)
 
 type Pipeline struct {
 	operators []*Operator
@@ -65,4 +67,34 @@ func (p *Pipeline) Display() string {
 		level++
 	}
 	return fmtString
+}
+
+type AsyncPipeline struct {
+	ops []*AsyncOperator
+}
+
+func (p *AsyncPipeline) AsyncExecute() error {
+	// start running each operator.
+	for _, op := range p.ops {
+		op.Start()
+	}
+	for i := 0; i < 10000; i++ {
+		p.ops[0].source.Read()
+	}
+	for _, op := range p.ops {
+		op.Wait()
+	}
+
+	// ywq todo wait all work done.
+	//time.Sleep(10 * time.Second)
+	return nil
+}
+
+func (p *AsyncPipeline) AddOperator(op *AsyncOperator) error {
+	p.ops = append(p.ops, op)
+	return nil
+}
+
+func (p *AsyncPipeline) LastOperator() *AsyncOperator {
+	return p.ops[len(p.ops)-1]
 }
