@@ -15,23 +15,45 @@
 package operator
 
 import (
-	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
+	"github.com/pingcap/log"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 )
 
 func NewAsyncPipeline() (*AsyncPipeline, any) {
-	impl0 := NewAsyncOperatorImpl("impl0", NewExampleAsyncOperatorImpl)
-	impl1 := NewAsyncOperatorImpl("impl1", NewExampleAsyncOperatorImpl)
-	impl2 := NewAsyncOperatorImpl("impl2", NewExampleAsyncOperatorImpl)
-	pool0 := impl0.GetPool()
-	pool1 := impl1.GetPool()
-	pool2 := impl2.GetPool()
+	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl)
+	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl)
+	impl2 := NewAsyncOperatorImpl[AsyncChunk]("impl2", NewExampleAsyncOperatorImpl)
+	pool0 := impl0.GetSource()
+	pool1 := impl1.GetSource()
+	pool2 := impl2.GetSource()
 	sink := &SimpleAsyncDataSink{0, 0, sync.Mutex{}}
 	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), impl0)
 	op2 := NewAsyncOperator(pool1.(DataSource), pool2.(DataSink), impl1)
 	op3 := NewAsyncOperator(pool2.(DataSource), sink, impl2)
+
+	pipeline := &AsyncPipeline{}
+	pipeline.AddOperator(op1)
+	pipeline.AddOperator(op2)
+	pipeline.AddOperator(op3)
+
+	return pipeline, pool0
+}
+
+func NewAsyncPipeline2() (*AsyncPipeline, any) {
+	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl)
+	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl)
+	pool0 := impl0.GetSource()
+	pool1 := impl1.GetSource()
+	sink := &SimpleAsyncDataSink{0, 0, sync.Mutex{}}
+	sink2 := &FinalAsyncDataSink{0, sync.Mutex{}}
+
+	impl2 := NewAsyncMemoryOperatorImpl[AsyncChunk]("impl2", sink, NewSourceFromMemoryAsyncOperatorImpl)
+
+	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), impl0)
+	op2 := NewAsyncOperator(pool1.(DataSource), sink, impl1)
+	op3 := NewAsyncOperator(sink, sink2, impl2)
 
 	pipeline := &AsyncPipeline{}
 	pipeline.AddOperator(op1)
@@ -48,5 +70,31 @@ func TestPipelineAsync(t *testing.T) {
 		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
 	}
 	pipeline.Wait()
-	logutil.BgLogger().Info("ywqtest", zap.Any("res", pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Res))
+
+	require.Equal(t, 30000, pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Res)
+}
+
+func TestPipelineAsync2(t *testing.T) {
+	pipeline, source := NewAsyncPipeline2()
+	pipeline.AsyncExecute()
+
+	//go func() {
+	//	cnt := 0
+	//	for {
+	//		if pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).HasNext() {
+	//			pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Read()
+	//			cnt++
+	//		}
+	//		if cnt == 10000 {
+	//			return
+	//		}
+	//	}
+	//}()
+	for i := 0; i < 50; i++ {
+		log.Info("ywq test add task")
+		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
+	}
+	pipeline.Wait()
+
+	require.Equal(t, 150, pipeline.LastOperator().GetSink().(*FinalAsyncDataSink).Res)
 }

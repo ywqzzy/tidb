@@ -36,10 +36,10 @@ type asyncWorker struct {
 func (aw *asyncWorker) HandleTask(task AsyncChunk) {
 	task.res.res++
 	logutil.BgLogger().Info("handle task", zap.Any("task", task))
-	if aw.sink.IsFull() {
-		return
+	for aw.sink.IsFull() {
+		continue
 	}
-	aw.sink.Write(task)
+	_ = aw.sink.Write(task)
 }
 
 func (*asyncWorker) Close() {}
@@ -58,11 +58,15 @@ func (oi *ExampleAsyncOperatorImpl) SetSink(sink DataSink) {
 	oi.sink = sink
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetPool(pool DataSource) {
+func (oi *ExampleAsyncOperatorImpl) SetSource(pool DataSource) {
 	oi.pool = pool
 }
 
-func (oi *ExampleAsyncOperatorImpl) GetPool() DataSource {
+func (oi *ExampleAsyncOperatorImpl) SetPool(pool any) {
+	return
+}
+
+func (oi *ExampleAsyncOperatorImpl) GetSource() DataSource {
 	return oi.pool
 }
 
@@ -88,6 +92,93 @@ func (oi *ExampleAsyncOperatorImpl) PostExecute() error {
 }
 
 func (oi *ExampleAsyncOperatorImpl) Display() string {
+	return "ExampleAsyncOperator"
+}
+
+func (oi *ExampleAsyncOperatorImpl) Close() {}
+
+// SourceFromMemoryAsyncOperatorImpl source not from channel
+type SourceFromMemoryAsyncOperatorImpl struct {
+	memory DataSource
+	pool   *workerpool.WorkerPool[AsyncChunk]
+	sink   DataSink
+	wg     sync.WaitGroup
+	closed bool
+	mu     sync.Mutex
+	cnt    int
+}
+
+func NewSourceFromMemoryAsyncOperatorImpl() AsyncOperatorImpl {
+	res := &SourceFromMemoryAsyncOperatorImpl{}
+	return res
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) Close() {
+	oi.mu.Lock()
+	oi.closed = true
+	oi.mu.Unlock()
+	oi.wg.Wait()
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) SetPool(pool any) {
+	oi.pool = pool.(*workerpool.WorkerPool[AsyncChunk])
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) SetSink(sink DataSink) {
+	oi.sink = sink
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) SetSource(source DataSource) {
+	oi.memory = source
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) GetSource() DataSource {
+	return oi.memory
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) PreExecute() error {
+	return nil
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) Start() {
+	// ywq todo: this will have bug...
+	oi.wg.Add(1)
+	go func() {
+		for {
+			//logutil.BgLogger().Info("for ?")
+			oi.mu.Lock()
+			if oi.memory.HasNext() {
+				data, _ := oi.memory.Read()
+				logutil.BgLogger().Info("send task")
+				oi.pool.AddTask(data.(AsyncChunk))
+				oi.cnt++
+			}
+			//logutil.BgLogger().Info("is closed", zap.Any("closed", oi.closed))
+			if oi.closed && oi.cnt == 50 {
+				oi.mu.Unlock()
+				oi.wg.Done()
+				return
+			}
+			oi.mu.Unlock()
+		}
+	}()
+	oi.pool.SetCreateWorker(oi.createWorker)
+	oi.pool.Start()
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) Wait() {
+	oi.pool.ReleaseAndWait()
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) createWorker() workerpool.Worker[AsyncChunk] {
+	return &asyncWorker{oi.sink}
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) PostExecute() error {
+	return nil
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) Display() string {
 	return "AsyncOperator"
 }
 
@@ -98,6 +189,9 @@ type SimpleAsyncDataSink struct {
 }
 
 func (sas *SimpleAsyncDataSink) IsFull() bool {
+	logutil.BgLogger().Info("cnt", zap.Any("cnt", sas.cnt))
+	sas.mu.Lock()
+	defer sas.mu.Unlock()
 	return sas.cnt >= 10
 }
 
@@ -110,6 +204,51 @@ func (sas *SimpleAsyncDataSink) Write(data any) error {
 	return nil
 }
 
-func (ss *SimpleAsyncDataSink) Display() string {
+func (sas *SimpleAsyncDataSink) HasNext() bool {
+	logutil.BgLogger().Info("has next")
+	sas.mu.Lock()
+	defer sas.mu.Unlock()
+	return sas.cnt > 0
+}
+
+func (sas *SimpleAsyncDataSink) Read() (any, error) {
+	sas.mu.Lock()
+	defer sas.mu.Unlock()
+	sas.cnt--
+	logutil.BgLogger().Info("ywq read")
+	return AsyncChunk{&DemoChunk{3}}, nil
+}
+
+func (sas *SimpleAsyncDataSink) Display() string {
 	return "SimpleAsyncDataSink"
+}
+
+type FinalAsyncDataSink struct {
+	Res int
+	mu  sync.Mutex
+}
+
+func (sas *FinalAsyncDataSink) IsFull() bool {
+	return false
+}
+
+func (sas *FinalAsyncDataSink) Write(data any) error {
+	sas.mu.Lock()
+	defer sas.mu.Unlock()
+	logutil.BgLogger().Info("ywq final aysncsink write")
+	innerVal := data.(AsyncChunk)
+	sas.Res += innerVal.res.res
+	return nil
+}
+
+func (sas *FinalAsyncDataSink) HasNext() bool {
+	return false
+}
+
+func (sas *FinalAsyncDataSink) Read() (any, error) {
+	return nil, nil
+}
+
+func (sas *FinalAsyncDataSink) Display() string {
+	return "FinalAsyncDataSink"
 }

@@ -16,7 +16,7 @@ package operator
 
 import "errors"
 
-type OperatorImpl interface {
+type PushOperatorImpl interface {
 	PreExecute() error
 	Execute(data any) error
 	PostExecute() error
@@ -38,7 +38,7 @@ type DataSink interface {
 type Operator struct {
 	source DataSource
 	sink   DataSink
-	impl   OperatorImpl
+	impl   PushOperatorImpl
 }
 
 type DataChunk struct {

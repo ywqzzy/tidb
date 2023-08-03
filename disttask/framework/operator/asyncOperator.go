@@ -46,22 +46,37 @@ func (op *AsyncOperator) Wait() {
 	op.impl.Wait()
 }
 
+func (op *AsyncOperator) Close() {
+	op.impl.Close()
+}
+
 type AsyncOperatorImpl interface {
 	SetSink(sink DataSink)
-	SetPool(pool DataSource)
-	GetPool() DataSource
+	SetSource(source DataSource)
+	GetSource() DataSource
+	SetPool(pool any)
 	PreExecute() error
 	PostExecute() error
 	Start()
 	Wait()
+	Close()
 	Display() string
 }
 
-func NewAsyncOperatorImpl(name string, newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
+func NewAsyncOperatorImpl[T any](name string, newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
 	res := newImpl()
-	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[AsyncChunk](name,
+	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name,
 		poolutil.DDL, 10)
-	res.SetPool(&AsyncDataChannel[AsyncChunk]{pool})
+	res.SetSource(&AsyncDataChannel[T]{pool})
+	return res
+}
+
+func NewAsyncMemoryOperatorImpl[T any](name string, source DataSource, newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
+	res := newImpl()
+	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name,
+		poolutil.DDL, 10)
+	res.SetPool(pool)
+	res.SetSource(source)
 	return res
 }
 

@@ -68,29 +68,3 @@ func (p *Pipeline) Display() string {
 	}
 	return fmtString
 }
-
-type AsyncPipeline struct {
-	ops []*AsyncOperator
-}
-
-func (p *AsyncPipeline) AsyncExecute() error {
-	// start running each operator.
-	for _, op := range p.ops {
-		op.Start()
-	}
-	return nil
-}
-
-func (p *AsyncPipeline) Wait() {
-	for _, op := range p.ops {
-		op.Wait()
-	}
-}
-
-func (p *AsyncPipeline) AddOperator(op *AsyncOperator) {
-	p.ops = append(p.ops, op)
-}
-
-func (p *AsyncPipeline) LastOperator() *AsyncOperator {
-	return p.ops[len(p.ops)-1]
-}
