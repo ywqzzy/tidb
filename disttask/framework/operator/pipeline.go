@@ -32,7 +32,7 @@ func (p *Pipeline) LastOperator() *Operator {
 
 func (p *Pipeline) PreExecute() error {
 	if len(p.operators) < 1 {
-		return errors.New("Operator number < 1")
+		return errors.New("operator number < 1")
 	}
 	return nil
 }
@@ -78,21 +78,17 @@ func (p *AsyncPipeline) AsyncExecute() error {
 	for _, op := range p.ops {
 		op.Start()
 	}
-	for i := 0; i < 10000; i++ {
-		p.ops[0].source.Read()
-	}
-	for _, op := range p.ops {
-		op.Wait()
-	}
-
-	// ywq todo wait all work done.
-	//time.Sleep(10 * time.Second)
 	return nil
 }
 
-func (p *AsyncPipeline) AddOperator(op *AsyncOperator) error {
+func (p *AsyncPipeline) Wait() {
+	for _, op := range p.ops {
+		op.Wait()
+	}
+}
+
+func (p *AsyncPipeline) AddOperator(op *AsyncOperator) {
 	p.ops = append(p.ops, op)
-	return nil
 }
 
 func (p *AsyncPipeline) LastOperator() *AsyncOperator {

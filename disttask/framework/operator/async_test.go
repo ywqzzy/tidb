@@ -21,36 +21,32 @@ import (
 	"testing"
 )
 
-func NewAsyncPipeline() *AsyncPipeline {
-	impl0 := NewExampleAsyncOperatorImpl("impl0")
-	impl1 := NewExampleAsyncOperatorImpl("impl1")
+func NewAsyncPipeline() (*AsyncPipeline, any) {
+	impl0 := NewAsyncOperatorImpl("impl0", NewExampleAsyncOperatorImpl)
+	impl1 := NewAsyncOperatorImpl("impl1", NewExampleAsyncOperatorImpl)
+	impl2 := NewAsyncOperatorImpl("impl2", NewExampleAsyncOperatorImpl)
 	pool0 := impl0.GetPool()
 	pool1 := impl1.GetPool()
+	pool2 := impl2.GetPool()
 	sink := &SimpleAsyncDataSink{0, 0, sync.Mutex{}}
-	impl0.SetSink(pool1.(DataSink))
-	impl1.SetSink(sink)
-
-	op1 := AsyncOperator{
-		source: pool0.(DataSource),
-		sink:   pool1.(DataSink),
-		impl:   &impl0,
-	}
-	op2 := AsyncOperator{
-		source: pool1.(DataSource),
-		sink:   sink,
-		impl:   &impl1,
-	}
+	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), impl0)
+	op2 := NewAsyncOperator(pool1.(DataSource), pool2.(DataSink), impl1)
+	op3 := NewAsyncOperator(pool2.(DataSource), sink, impl2)
 
 	pipeline := &AsyncPipeline{}
-	pipeline.AddOperator(&op1)
-	pipeline.AddOperator(&op2)
+	pipeline.AddOperator(op1)
+	pipeline.AddOperator(op2)
+	pipeline.AddOperator(op3)
 
-	return pipeline
+	return pipeline, pool0
 }
 
 func TestPipelineAsync(t *testing.T) {
-	pipeline := NewAsyncPipeline()
+	pipeline, source := NewAsyncPipeline()
 	pipeline.AsyncExecute()
-
+	for i := 0; i < 10000; i++ {
+		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
+	}
+	pipeline.Wait()
 	logutil.BgLogger().Info("ywqtest", zap.Any("res", pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Res))
 }

@@ -104,13 +104,13 @@ func NewManager(ctx context.Context, taskTable *storage.TaskManager) (*Manager, 
 	return dispatcherManager, nil
 }
 
-// Start start the dispatcherManager, start the dispatchTaskLoop to start multiple dispatchers.
+// Start the dispatcherManager, start the dispatchTaskLoop to start multiple dispatchers.
 func (dm *Manager) Start() {
 	dm.wg.Run(dm.dispatchTaskLoop)
 	dm.inited = true
 }
 
-// Stop stop the dispatcherManager.
+// Stop the dispatcherManager.
 func (dm *Manager) Stop() {
 	dm.cancel()
 	dm.gPool.ReleaseAndWait()

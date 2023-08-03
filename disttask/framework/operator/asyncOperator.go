@@ -17,9 +17,6 @@ package operator
 import (
 	"github.com/pingcap/tidb/resourcemanager/pool/workerpool"
 	poolutil "github.com/pingcap/tidb/resourcemanager/util"
-	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
-	"sync"
 )
 
 type AsyncOperator struct {
@@ -28,8 +25,13 @@ type AsyncOperator struct {
 	impl   AsyncOperatorImpl
 }
 
-func (op *AsyncOperator) Execute() {
-	op.impl.Execute(op.source, op.sink)
+func NewAsyncOperator(source DataSource, sink DataSink, impl AsyncOperatorImpl) *AsyncOperator {
+	impl.SetSink(sink)
+	return &AsyncOperator{
+		source: source,
+		sink:   sink,
+		impl:   impl,
+	}
 }
 
 func (op *AsyncOperator) Start() {
@@ -45,121 +47,33 @@ func (op *AsyncOperator) Wait() {
 }
 
 type AsyncOperatorImpl interface {
+	SetSink(sink DataSink)
+	SetPool(pool DataSource)
+	GetPool() DataSource
 	PreExecute() error
-	Execute(source DataSource, sink DataSink) error
 	PostExecute() error
 	Start()
 	Wait()
 	Display() string
 }
 
-type AsyncChunk struct {
-	res *Chunk
-}
-
-type Chunk struct {
-	res int
-}
-
-type AsyncDataChannel struct {
-	channel *workerpool.WorkerPool[AsyncChunk]
-}
-
-func (c *AsyncDataChannel) HasNext() bool { return false }
-func (c *AsyncDataChannel) Read() (any, error) {
-	logutil.BgLogger().Info("ywq test here")
-	c.channel.AddTask(AsyncChunk{
-		res: &Chunk{0},
-	})
-	return nil, nil
-}
-func (c *AsyncDataChannel) Display() string { return "channel" }
-func (c *AsyncDataChannel) IsFull() bool    { return false }
-func (c *AsyncDataChannel) Write(data any) error {
-	c.channel.AddTask(data.(AsyncChunk))
-	return nil
-}
-
-type asyncWorker struct {
-	sink DataSink
-}
-
-func (aw *asyncWorker) HandleTask(task AsyncChunk) {
-	task.res.res++
-	logutil.BgLogger().Info("handle task", zap.Any("task", task))
-	aw.sink.Write(task)
-}
-
-func (*asyncWorker) Close() {}
-
-type ExampleAsyncOperatorImpl struct {
-	pool DataSource
-	sink DataSink
-}
-
-func NewExampleAsyncOperatorImpl(name string) ExampleAsyncOperatorImpl {
-	res := ExampleAsyncOperatorImpl{}
+func NewAsyncOperatorImpl(name string, newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
+	res := newImpl()
 	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[AsyncChunk](name,
 		poolutil.DDL, 10)
-	res.pool = &AsyncDataChannel{pool}
+	res.SetPool(&AsyncDataChannel[AsyncChunk]{pool})
 	return res
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetSink(sink DataSink) {
-	oi.sink = sink
+type AsyncDataChannel[T any] struct {
+	channel *workerpool.WorkerPool[T]
 }
 
-func (oi *ExampleAsyncOperatorImpl) GetPool() any {
-	return oi.pool
-}
-
-func (oi *ExampleAsyncOperatorImpl) PreExecute() error {
+func (c *AsyncDataChannel[T]) HasNext() bool      { return false }
+func (c *AsyncDataChannel[T]) Read() (any, error) { return nil, nil }
+func (c *AsyncDataChannel[T]) Display() string    { return "AsyncDataChannel" }
+func (c *AsyncDataChannel[T]) IsFull() bool       { return false }
+func (c *AsyncDataChannel[T]) Write(data any) error {
+	c.channel.AddTask(data.(T))
 	return nil
-}
-
-func (oi *ExampleAsyncOperatorImpl) Execute(source DataSource, sink DataSink) error {
-	return nil
-}
-
-func (oi *ExampleAsyncOperatorImpl) Start() {
-	oi.pool.(*AsyncDataChannel).channel.SetCreateWorker(oi.createWorker)
-	oi.pool.(*AsyncDataChannel).channel.Start()
-}
-
-func (oi *ExampleAsyncOperatorImpl) Wait() {
-	oi.pool.(*AsyncDataChannel).channel.ReleaseAndWait()
-}
-
-func (oi *ExampleAsyncOperatorImpl) createWorker() workerpool.Worker[AsyncChunk] {
-	return &asyncWorker{oi.sink}
-}
-
-func (oi *ExampleAsyncOperatorImpl) PostExecute() error {
-	return nil
-}
-
-func (oi *ExampleAsyncOperatorImpl) Display() string {
-	return "AsyncOperator"
-}
-
-type SimpleAsyncDataSink struct {
-	Res int
-	cnt int
-	mu  sync.Mutex
-}
-
-func (sks *SimpleAsyncDataSink) IsFull() bool {
-	return sks.cnt > 10
-}
-
-func (sks *SimpleAsyncDataSink) Write(data any) error {
-	sks.mu.Lock()
-	defer sks.mu.Unlock()
-	innerVal := data.(AsyncChunk)
-	sks.Res += innerVal.res.res
-	return nil
-}
-
-func (ss *SimpleAsyncDataSink) Display() string {
-	return "SimpleAsyncDataSink"
 }
