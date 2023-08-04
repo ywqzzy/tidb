@@ -15,52 +15,50 @@
 package operator
 
 import (
-	"github.com/pingcap/log"
+	poolutil "github.com/pingcap/tidb/resourcemanager/util"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 )
 
 func NewAsyncPipeline() (*AsyncPipeline, any) {
-	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl)
-	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl)
-	impl2 := NewAsyncOperatorImpl[AsyncChunk]("impl2", NewExampleAsyncOperatorImpl)
-	pool0 := impl0.GetSource()
-	pool1 := impl1.GetSource()
-	pool2 := impl2.GetSource()
+	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl, poolutil.DDL, 10)
+	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl, poolutil.DDL, 10)
+	impl2 := NewAsyncOperatorImpl[AsyncChunk]("impl2", NewExampleAsyncOperatorImpl, poolutil.DDL, 10)
+	pool0 := impl0.getSource()
+	pool1 := impl1.getSource()
+	pool2 := impl2.getSource()
 	sink := &SimpleAsyncDataSink{0, 0, sync.Mutex{}}
-	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), impl0)
-	op2 := NewAsyncOperator(pool1.(DataSource), pool2.(DataSink), impl1)
-	op3 := NewAsyncOperator(pool2.(DataSource), sink, impl2)
+	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), false, impl0)
+	op2 := NewAsyncOperator(pool1.(DataSource), pool2.(DataSink), false, impl1)
+	op3 := NewAsyncOperator(pool2.(DataSource), sink, false, impl2)
 
 	pipeline := &AsyncPipeline{}
 	pipeline.AddOperator(op1)
 	pipeline.AddOperator(op2)
 	pipeline.AddOperator(op3)
-
 	return pipeline, pool0
 }
 
-func NewAsyncPipeline2() (*AsyncPipeline, any) {
-	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl)
-	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl)
-	pool0 := impl0.GetSource()
-	pool1 := impl1.GetSource()
+func NewAsyncPipeline2() *AsyncPipeline {
+	impl0 := NewAsyncOperatorImpl[AsyncChunk]("impl0", NewExampleAsyncOperatorImpl, poolutil.DDL, 10)
+	impl1 := NewAsyncOperatorImpl[AsyncChunk]("impl1", NewExampleAsyncOperatorImpl, poolutil.DDL, 10)
+	pool0 := impl0.getSource()
+	pool1 := impl1.getSource()
 	sink := &SimpleAsyncDataSink{0, 0, sync.Mutex{}}
 	sink2 := &FinalAsyncDataSink{0, sync.Mutex{}}
+	impl2 := NewAsyncOperatorImplWithDataSource[AsyncChunk]("impl2", sink, NewSourceFromMemoryAsyncOperatorImpl, poolutil.DDL, 10)
+	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), false, impl0)
+	op2 := NewAsyncOperator(pool1.(DataSource), sink, false, impl1)
+	op3 := NewAsyncOperator(sink, sink2, true, impl2)
 
-	impl2 := NewAsyncMemoryOperatorImpl[AsyncChunk]("impl2", sink, NewSourceFromMemoryAsyncOperatorImpl)
-
-	op1 := NewAsyncOperator(pool0.(DataSource), pool1.(DataSink), impl0)
-	op2 := NewAsyncOperator(pool1.(DataSource), sink, impl1)
-	op3 := NewAsyncOperator(sink, sink2, impl2)
-
+	/// add index 的 build plan 业务实现。
 	pipeline := &AsyncPipeline{}
+
 	pipeline.AddOperator(op1)
 	pipeline.AddOperator(op2)
 	pipeline.AddOperator(op3)
-
-	return pipeline, pool0
+	return pipeline
 }
 
 func TestPipelineAsync(t *testing.T) {
@@ -70,20 +68,17 @@ func TestPipelineAsync(t *testing.T) {
 		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
 	}
 	pipeline.Wait()
-
 	require.Equal(t, 30000, pipeline.LastOperator().GetSink().(*SimpleAsyncDataSink).Res)
 }
 
 func TestPipelineAsync2(t *testing.T) {
-	pipeline, source := NewAsyncPipeline2()
+	pipeline := NewAsyncPipeline2()
 	pipeline.AsyncExecute()
-	taskCnt := 100
+	taskCnt := 1000
 	for i := 0; i < taskCnt; i++ {
-		log.Info("ywq test add task")
-		source.(*AsyncDataChannel[AsyncChunk]).Write(AsyncChunk{&DemoChunk{0}})
+		pipeline.FirstOperator().AddTask(AsyncChunk{&DemoChunk{0}})
 	}
 	pipeline.LastOperator().SetEnd(taskCnt)
 	pipeline.Wait()
-
 	require.Equal(t, taskCnt*4, pipeline.LastOperator().GetSink().(*FinalAsyncDataSink).Res)
 }

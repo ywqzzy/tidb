@@ -126,7 +126,7 @@ func (p *WorkerPool[T]) SetCreateWorker(createWorker func() Worker[T]) {
 
 func (p *WorkerPool[T]) Start() {
 	// Start default count of workers.
-	log.Info("start pool")
+	log.Debug("start pool")
 	for i := 0; i < int(p.numWorkers); i++ {
 		p.runAWorker()
 	}
@@ -162,7 +162,7 @@ func (p *WorkerPool[T]) runAWorker() {
 
 // AddTask adds a task to the pool.
 func (p *WorkerPool[T]) AddTask(task T) {
-	log.Info("call add task")
+	log.Debug("call add task")
 	p.taskChan <- task
 }
 

@@ -17,24 +17,58 @@ package operator
 import (
 	"github.com/pingcap/tidb/resourcemanager/pool/workerpool"
 	poolutil "github.com/pingcap/tidb/resourcemanager/util"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
+	"sync"
 )
 
 type AsyncOperator struct {
-	source DataSource
-	sink   DataSink
-	impl   AsyncOperatorImpl
+	source      DataSource
+	sink        DataSink
+	impl        AsyncOperatorImpl
+	startSource bool
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	cnt         int
+	finalCnt    int
+	closed      bool
 }
 
-func NewAsyncOperator(source DataSource, sink DataSink, impl AsyncOperatorImpl) *AsyncOperator {
-	impl.SetSink(sink)
+func NewAsyncOperator(source DataSource, sink DataSink, startSource bool, impl AsyncOperatorImpl) *AsyncOperator {
+	impl.setSink(sink)
 	return &AsyncOperator{
-		source: source,
-		sink:   sink,
-		impl:   impl,
+		source:      source,
+		sink:        sink,
+		impl:        impl,
+		startSource: startSource,
 	}
 }
 
 func (op *AsyncOperator) Start() {
+	// todo: add task multi threaded?
+	if op.startSource {
+		logutil.BgLogger().Info("start startsource")
+		op.wg.Add(1)
+		go func() {
+			for {
+				logutil.BgLogger().Info("for ?")
+				op.mu.Lock()
+				if op.source.HasNext() {
+					data, _ := op.source.Read()
+					logutil.BgLogger().Info("send task")
+					op.impl.AddTask(data)
+					op.cnt++
+				}
+				logutil.BgLogger().Info("is closed", zap.Any("closed", op.closed), zap.Any("cnt", op.cnt))
+				if op.closed && op.cnt == op.finalCnt {
+					op.mu.Unlock()
+					op.wg.Done()
+					return
+				}
+				op.mu.Unlock()
+			}
+		}()
+	}
 	op.impl.Start()
 }
 
@@ -47,44 +81,55 @@ func (op *AsyncOperator) Wait() {
 }
 
 func (op *AsyncOperator) Close() {
-	op.impl.Close()
+	op.mu.Lock()
+	op.closed = true
+	op.mu.Unlock()
+	op.wg.Wait()
 }
 
 func (op *AsyncOperator) SetEnd(end int) {
-	op.impl.SetEnd(end)
+	op.finalCnt = end
+}
+
+func (op *AsyncOperator) AddTask(data any) {
+	op.impl.AddTask(data)
 }
 
 type AsyncOperatorImpl interface {
-	SetSink(sink DataSink)
-	SetSource(source DataSource)
-	GetSource() DataSource
-	SetPool(pool any)
+	setSink(sink DataSink)
+	setSource(source DataSource)
+	getSource() DataSource
+	setPool(pool any)
+	getPool() any
+	AddTask(data any)
 	PreExecute() error
 	PostExecute() error
 	Start()
 	Wait()
-	Close()
 	Display() string
-	SetEnd(end int)
 }
 
-func NewAsyncOperatorImpl[T any](name string,
-	newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
+func NewAsyncOperatorImpl[T any](
+	name string,
+	newImpl func() AsyncOperatorImpl,
+	component poolutil.Component,
+	workerCnt int) AsyncOperatorImpl {
 	res := newImpl()
-	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name,
-		poolutil.DDL, 10)
-	res.SetSource(&AsyncDataChannel[T]{pool})
+	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name, component, workerCnt)
+	res.setPool(pool)
+	res.setSource(&AsyncDataChannel[T]{pool})
 	return res
 }
 
-func NewAsyncMemoryOperatorImpl[T any](name string,
-	source DataSource,
-	newImpl func() AsyncOperatorImpl) AsyncOperatorImpl {
+func NewAsyncOperatorImplWithDataSource[T any](
+	name string, source DataSource,
+	newImpl func() AsyncOperatorImpl,
+	component poolutil.Component,
+	workerCnt int) AsyncOperatorImpl {
 	res := newImpl()
-	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name,
-		poolutil.DDL, 10)
-	res.SetPool(pool)
-	res.SetSource(source)
+	pool, _ := workerpool.NewWorkerPoolWithOutCreateWorker[T](name, component, workerCnt)
+	res.setPool(pool)
+	res.setSource(source)
 	return res
 }
 

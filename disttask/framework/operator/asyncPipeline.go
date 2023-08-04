@@ -19,7 +19,7 @@ type AsyncPipeline struct {
 }
 
 func (p *AsyncPipeline) AsyncExecute() error {
-	// start running each operator.
+	// Start running each operator.
 	for _, op := range p.ops {
 		op.Start()
 	}
@@ -27,6 +27,7 @@ func (p *AsyncPipeline) AsyncExecute() error {
 }
 
 func (p *AsyncPipeline) Wait() {
+	// Wait each operator closed.
 	for _, op := range p.ops {
 		op.Close()
 	}
@@ -37,6 +38,10 @@ func (p *AsyncPipeline) Wait() {
 
 func (p *AsyncPipeline) AddOperator(op *AsyncOperator) {
 	p.ops = append(p.ops, op)
+}
+
+func (p *AsyncPipeline) FirstOperator() *AsyncOperator {
+	return p.ops[0]
 }
 
 func (p *AsyncPipeline) LastOperator() *AsyncOperator {

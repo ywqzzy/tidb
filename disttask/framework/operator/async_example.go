@@ -46,8 +46,9 @@ func (aw *asyncWorker) HandleTask(task AsyncChunk) {
 func (*asyncWorker) Close() {}
 
 type ExampleAsyncOperatorImpl struct {
-	pool DataSource
-	sink DataSink
+	source DataSource
+	sink   DataSink
+	pool   *workerpool.WorkerPool[AsyncChunk]
 }
 
 func NewExampleAsyncOperatorImpl() AsyncOperatorImpl {
@@ -55,36 +56,37 @@ func NewExampleAsyncOperatorImpl() AsyncOperatorImpl {
 	return res
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetSink(sink DataSink) {
+func (oi *ExampleAsyncOperatorImpl) setSink(sink DataSink) {
 	oi.sink = sink
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetSource(pool DataSource) {
-	oi.pool = pool
+func (oi *ExampleAsyncOperatorImpl) setSource(source DataSource) {
+	oi.source = source
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetPool(pool any) {
-	return
+func (oi *ExampleAsyncOperatorImpl) setPool(pool any) {
+	oi.pool = pool.(*workerpool.WorkerPool[AsyncChunk])
 }
 
-func (oi *ExampleAsyncOperatorImpl) GetSource() DataSource {
+func (oi *ExampleAsyncOperatorImpl) getPool() any {
 	return oi.pool
+}
+
+func (oi *ExampleAsyncOperatorImpl) getSource() DataSource {
+	return oi.source
 }
 
 func (oi *ExampleAsyncOperatorImpl) PreExecute() error {
 	return nil
 }
 
-func (oi *ExampleAsyncOperatorImpl) SetEnd(int) {
-}
-
 func (oi *ExampleAsyncOperatorImpl) Start() {
-	oi.pool.(*AsyncDataChannel[AsyncChunk]).channel.SetCreateWorker(oi.createWorker)
-	oi.pool.(*AsyncDataChannel[AsyncChunk]).channel.Start()
+	oi.pool.SetCreateWorker(oi.createWorker)
+	oi.pool.Start()
 }
 
 func (oi *ExampleAsyncOperatorImpl) Wait() {
-	oi.pool.(*AsyncDataChannel[AsyncChunk]).channel.ReleaseAndWait()
+	oi.pool.ReleaseAndWait()
 }
 
 func (oi *ExampleAsyncOperatorImpl) createWorker() workerpool.Worker[AsyncChunk] {
@@ -99,7 +101,9 @@ func (oi *ExampleAsyncOperatorImpl) Display() string {
 	return "ExampleAsyncOperator"
 }
 
-func (oi *ExampleAsyncOperatorImpl) Close() {}
+func (oi *ExampleAsyncOperatorImpl) AddTask(data any) {
+	oi.pool.AddTask(data.(AsyncChunk))
+}
 
 // SourceFromMemoryAsyncOperatorImpl source not from channel
 type SourceFromMemoryAsyncOperatorImpl struct {
@@ -118,26 +122,27 @@ func NewSourceFromMemoryAsyncOperatorImpl() AsyncOperatorImpl {
 	return res
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) Close() {
-	oi.mu.Lock()
-	oi.closed = true
-	oi.mu.Unlock()
-	oi.wg.Wait()
+func (oi *SourceFromMemoryAsyncOperatorImpl) AddTask(data any) {
+	oi.pool.AddTask(data.(AsyncChunk))
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) SetPool(pool any) {
+func (oi *SourceFromMemoryAsyncOperatorImpl) setPool(pool any) {
 	oi.pool = pool.(*workerpool.WorkerPool[AsyncChunk])
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) SetSink(sink DataSink) {
+func (oi *SourceFromMemoryAsyncOperatorImpl) getPool() any {
+	return oi.pool
+}
+
+func (oi *SourceFromMemoryAsyncOperatorImpl) setSink(sink DataSink) {
 	oi.sink = sink
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) SetSource(source DataSource) {
+func (oi *SourceFromMemoryAsyncOperatorImpl) setSource(source DataSource) {
 	oi.memory = source
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) GetSource() DataSource {
+func (oi *SourceFromMemoryAsyncOperatorImpl) getSource() DataSource {
 	return oi.memory
 }
 
@@ -146,33 +151,11 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) PreExecute() error {
 }
 
 func (oi *SourceFromMemoryAsyncOperatorImpl) Start() {
-	// ywq todo: this will have bug...
-	oi.wg.Add(1)
-	go func() {
-		for {
-			logutil.BgLogger().Info("for ?")
-			oi.mu.Lock()
-			if oi.memory.HasNext() {
-				data, _ := oi.memory.Read()
-				logutil.BgLogger().Info("send task")
-				oi.pool.AddTask(data.(AsyncChunk))
-				oi.cnt++
-			}
-			logutil.BgLogger().Info("is closed", zap.Any("closed", oi.closed), zap.Any("cnt", oi.cnt))
-			if oi.closed && oi.cnt == oi.finalCnt {
-				oi.mu.Unlock()
-				oi.wg.Done()
-				return
-			}
-			oi.mu.Unlock()
-		}
-	}()
 	oi.pool.SetCreateWorker(oi.createWorker)
 	oi.pool.Start()
 }
 
 func (oi *SourceFromMemoryAsyncOperatorImpl) Wait() {
-	// ywq todo
 	oi.pool.ReleaseAndWait()
 }
 
@@ -188,10 +171,6 @@ func (oi *SourceFromMemoryAsyncOperatorImpl) Display() string {
 	return "AsyncOperator"
 }
 
-func (oi *SourceFromMemoryAsyncOperatorImpl) SetEnd(end int) {
-	oi.finalCnt = end
-}
-
 type SimpleAsyncDataSink struct {
 	Res int
 	cnt int
@@ -199,10 +178,7 @@ type SimpleAsyncDataSink struct {
 }
 
 func (sas *SimpleAsyncDataSink) IsFull() bool {
-	logutil.BgLogger().Info("cnt", zap.Any("cnt", sas.cnt))
-	sas.mu.Lock()
-	defer sas.mu.Unlock()
-	return sas.cnt >= 10
+	return false
 }
 
 func (sas *SimpleAsyncDataSink) Write(data any) error {
