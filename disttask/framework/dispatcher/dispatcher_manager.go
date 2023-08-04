@@ -39,7 +39,6 @@ func (dm *Manager) setRunningTask(task *proto.Task, dispatcher *dispatcher) {
 	defer dm.runningTasks.Unlock()
 	dm.runningTasks.taskIDs[task.ID] = struct{}{}
 	dm.runningTasks.dispatchers[task.ID] = dispatcher
-	dispatcher.ExecuteTask()
 }
 
 func (dm *Manager) isRunningTask(taskID int64) bool {
@@ -50,6 +49,7 @@ func (dm *Manager) isRunningTask(taskID int64) bool {
 }
 
 func (dm *Manager) delRunningTask(taskID int64) {
+	logutil.BgLogger().Info("ywq test del")
 	dm.runningTasks.Lock()
 	defer dm.runningTasks.Unlock()
 	delete(dm.runningTasks.taskIDs, taskID)
@@ -185,11 +185,16 @@ func (*Manager) checkConcurrencyOverflow(cnt int) bool {
 }
 
 func (dm *Manager) startDispatcher(task *proto.Task) {
-	dispatcher := newDispatcher(dm.ctx, dm.gPool, dm.taskMgr, task, dm.finishedTaskCh)
-	dm.setRunningTask(task, dispatcher)
+	// Using the pool with block, so it wouldn't return an error.
+	_ = dm.gPool.Run(func() {
+		dispatcher := newDispatcher(dm.ctx, dm.taskMgr, task)
+		dm.setRunningTask(task, dispatcher)
+		dispatcher.ExecuteTask()
+		dm.delRunningTask(task.ID)
+	})
 }
 
 // MockDispatcher mock one dispatcher for one task, only used for tests.
 func (dm *Manager) MockDispatcher(task *proto.Task) *dispatcher {
-	return &dispatcher{dm.ctx, dm.gPool, dm.taskMgr, task, nil}
+	return &dispatcher{dm.ctx, dm.taskMgr, task}
 }

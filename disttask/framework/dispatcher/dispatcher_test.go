@@ -254,7 +254,17 @@ func checkDispatch(t *testing.T, taskCnt int, isSucc bool, isCancel bool) {
 		}
 		checkGetTaskState(proto.TaskStateSucceed)
 		require.Len(t, tasks, taskCnt)
-		require.Equal(t, 0, dsp.GetRunningTaskCnt())
+
+		var runningCnt int
+		for i := 0; i < cnt; i++ {
+			runningCnt = dsp.GetRunningTaskCnt()
+			if runningCnt == 0 {
+				break
+			}
+			time.Sleep(time.Millisecond * 50)
+		}
+		require.Equal(t, 0, runningCnt)
+
 		return
 	}
 
@@ -286,7 +296,15 @@ func checkDispatch(t *testing.T, taskCnt int, isSucc bool, isCancel bool) {
 	}
 	checkGetTaskState(proto.TaskStateReverted)
 	require.Len(t, tasks, taskCnt)
-	require.Equal(t, 0, dsp.GetRunningTaskCnt())
+	var runningCnt int
+	for i := 0; i < cnt; i++ {
+		runningCnt = dsp.GetRunningTaskCnt()
+		if runningCnt == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond * 50)
+	}
+	require.Equal(t, 0, runningCnt)
 }
 
 func TestSimpleNormalFlow(t *testing.T) {

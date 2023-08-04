@@ -192,6 +192,7 @@ func TestFrameworkBasic(t *testing.T) {
 	var v atomic.Int64
 	RegisterTaskMeta(&v)
 	distContext := testkit.NewDistExecutionContext(t, 2)
+
 	DispatchTaskAndCheckSuccess("key1", t, &v)
 	DispatchTaskAndCheckSuccess("key2", t, &v)
 	distContext.SetOwner(0)
