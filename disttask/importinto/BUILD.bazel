@@ -4,6 +4,7 @@ go_library(
     name = "importinto",
     srcs = [
         "dispatcher.go",
+        "import_plan.go",
         "job.go",
         "proto.go",
         "scheduler.go",
@@ -46,6 +47,7 @@ go_library(
         "@com_github_google_uuid//:uuid",
         "@com_github_pingcap_errors//:errors",
         "@com_github_pingcap_failpoint//:failpoint",
+        "@com_github_pingcap_log//:log",
         "@com_github_tikv_client_go_v2//util",
         "@org_uber_go_atomic//:atomic",
         "@org_uber_go_zap//:zap",

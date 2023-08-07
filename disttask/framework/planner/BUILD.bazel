@@ -2,9 +2,26 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "planner",
+    srcs = [
+        "builder.go",
+        "planner.go",
+    ],
+    importpath = "github.com/pingcap/tidb/disttask/framework/planner",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//disttask/framework/dispatcher",
+        "//disttask/framework/proto",
+        "//disttask/importinto",
+    ],
 )
 
 go_test(
     name = "planner_test",
     timeout = "short",
+    srcs = ["plan_test.go"],
+    flaky = True,
+    deps = [
+        ":planner",
+        "//disttask/framework/proto",
+    ],
 )

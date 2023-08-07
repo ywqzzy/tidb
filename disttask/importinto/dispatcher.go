@@ -17,6 +17,7 @@ package importinto
 import (
 	"context"
 	"encoding/json"
+	"github.com/pingcap/tidb/disttask/framework/planner"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,6 +134,7 @@ type flowHandle struct {
 	// It may be changed when we switch to a new task or switch to a new owner.
 	currTaskID            atomic.Int64
 	disableTiKVImportMode atomic.Bool
+	planner               *planner.DistPlanner
 }
 
 var _ dispatcher.TaskFlowHandle = (*flowHandle)(nil)
@@ -227,21 +229,11 @@ func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.Ta
 		if err = startJob(ctx, handle, taskMeta); err != nil {
 			return nil, err
 		}
-		subtaskMetas, err := generateImportStepMetas(ctx, taskMeta)
-		if err != nil {
-			return nil, err
-		}
-		logger.Info("move to import step", zap.Any("subtask-count", len(subtaskMetas)))
-		metaBytes := make([][]byte, 0, len(subtaskMetas))
-		for _, subtaskMeta := range subtaskMetas {
-			bs, err := json.Marshal(subtaskMeta)
-			if err != nil {
-				return nil, err
-			}
-			metaBytes = append(metaBytes, bs)
-		}
-		gTask.Step = StepImport
-		return metaBytes, nil
+
+		h.planner = planner.NewDistPlanner(gTask)
+		_ = h.planner.BuildPlan(ctx)
+		res, _ := h.planner.SubmitStage()
+		return res, nil
 	case StepImport:
 		// ywq todo add it....
 		h.switchTiKV2NormalMode(ctx, gTask, logger)

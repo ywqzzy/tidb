@@ -6,11 +6,13 @@ go_library(
         "dispatcher.go",
         "dispatcher_manager.go",
         "dispatcher_mock.go",
+        "plan.go",
         "register.go",
     ],
     importpath = "github.com/pingcap/tidb/disttask/framework/dispatcher",
     visibility = ["//visibility:public"],
     deps = [
+        "//disttask/framework/planner",
         "//disttask/framework/proto",
         "//disttask/framework/storage",
         "//domain/infosync",

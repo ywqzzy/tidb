@@ -16,37 +16,36 @@ package planner
 
 import (
 	"context"
+
 	"github.com/pingcap/tidb/disttask/framework/proto"
+	"github.com/pingcap/tidb/util/syncutil"
 )
 
-type plan interface {
-	TP() string
-	Child() plan
-	ToSubtasks(task *proto.Task) ([][]byte, error)
+type DistPlanBuilder interface {
+	BuildPlan(ctx context.Context) (Plan, error)
 }
 
-type DistPlanBuilder struct {
-	task *proto.Task
+var DistPlanBuilderMap struct {
+	syncutil.RWMutex
+	builderMap map[string]DistPlanBuilder
 }
 
-func (b *DistPlanBuilder) Build(ctx context.Context) (plan, error) {
-	switch b.task.Type {
-	case proto.ImportInto:
-		return b.buildImportIntoPlan()
-	case proto.TaskTypeExample:
-		return nil, nil
-	}
-	return nil, nil
+// RegisterTaskFlowHandle is used to register the global task handle.
+func RegisterDistPlanBuilder(taskType string, builder DistPlanBuilder) {
+	DistPlanBuilderMap.Lock()
+	DistPlanBuilderMap.builderMap[taskType] = builder
+	DistPlanBuilderMap.Unlock()
 }
 
-func (b *DistPlanBuilder) buildImportIntoPlan() (plan, error) {
-	res := &importPlan2{}
-	res.SetChildren(&importPlan1{})
-	return res, nil
+// GetTaskFlowHandle is used to get the global task handle.
+func GetDistPlanBuilder(taskType string) DistPlanBuilder {
+	DistPlanBuilderMap.Lock()
+	defer DistPlanBuilderMap.Unlock()
+	return DistPlanBuilderMap.builderMap[taskType]
 }
 
 type stage struct {
-	plan     plan
+	plan     Plan
 	subtasks []*proto.Subtask
 }
 
@@ -71,8 +70,8 @@ func NewDistPlanner(task *proto.Task) *DistPlanner {
 
 func (p *DistPlanner) BuildPlan(ctx context.Context) error {
 	// generate plan.
-	builder := DistPlanBuilder{p.task}
-	plan, err := builder.Build(ctx)
+	builder := GetDistPlanBuilder(p.task.Type)
+	plan, err := builder.BuildPlan(ctx)
 	if err != nil {
 		return err
 	}
@@ -81,7 +80,7 @@ func (p *DistPlanner) BuildPlan(ctx context.Context) error {
 	return nil
 }
 
-func (p *DistPlanner) generateStage(plan plan) {
+func (p *DistPlanner) generateStage(plan Plan) {
 	if plan.Child() != nil {
 		p.generateStage(plan.Child())
 		p.stages = append(p.stages, &stage{plan, nil})
@@ -98,4 +97,8 @@ func (p *DistPlanner) SubmitStage() ([][]byte, error) {
 
 func (p *DistPlanner) IsCurrentStageFinished() bool {
 	return p.stages[p.task.Step].Finished()
+}
+
+func init() {
+	DistPlanBuilderMap.builderMap = make(map[string]DistPlanBuilder)
 }
