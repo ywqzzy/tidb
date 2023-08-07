@@ -48,7 +48,16 @@ type stage struct {
 	subtasks []*proto.Subtask
 }
 
+func (s *stage) SubmitTasks() error {
+	return nil
+}
+
+func (s *stage) Finished() bool {
+	return true
+}
+
 type DistPlanner struct {
+	task           *proto.Task
 	stages         []*stage
 	finishedStages []*stage
 }
@@ -59,10 +68,10 @@ func (p *DistPlanner) BuildPlan() {
 	// write to task table
 }
 
-func (p *DistPlanner) IsCurrentStageFinished() bool {
-
+func (p *DistPlanner) SubmitStage() error {
+	return p.stages[p.task.Step].SubmitTasks()
 }
 
-func (p *DistPlanner) SubmitStage() {
-
+func (p *DistPlanner) IsCurrentStageFinished() bool {
+	return p.stages[p.task.Step].Finished()
 }

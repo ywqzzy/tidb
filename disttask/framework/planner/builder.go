@@ -13,21 +13,3 @@
 // limitations under the License.
 
 package planner
-
-type planBuilder struct {
-	stages         []*stage
-	finishedStages []*stage
-}
-
-func (p *planner) generatePlan() {
-	// generate
-	// write to task table
-}
-
-func (p *planner) IsCurrentStageFinished() bool {
-
-}
-
-func (p *planner) SubmitStage() {
-
-}
