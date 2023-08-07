@@ -118,3 +118,17 @@ func CancelGlobalTask(taskKey string) error {
 	}
 	return globalTaskManager.CancelGlobalTask(globalTask.ID)
 }
+
+func GetPreviousSubtaskMetas(taskID int64, step int64) ([][]byte, error) {
+	mgr, err := storage.GetTaskManager()
+	previousSubtasks, err := mgr.GetSucceedSubtasksByStep(taskID, step)
+	if err != nil {
+		logutil.BgLogger().Warn("get previous succeed subtask failed", zap.Int64("step", step))
+		return nil, err
+	}
+	previousSubtaskMetas := make([][]byte, 0, len(previousSubtasks))
+	for _, subtask := range previousSubtasks {
+		previousSubtaskMetas = append(previousSubtaskMetas, subtask.Meta)
+	}
+	return previousSubtaskMetas, nil
+}

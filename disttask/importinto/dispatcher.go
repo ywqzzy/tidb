@@ -243,6 +243,7 @@ func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.Ta
 		gTask.Step = StepImport
 		return metaBytes, nil
 	case StepImport:
+		// ywq todo add it....
 		h.switchTiKV2NormalMode(ctx, gTask, logger)
 		failpoint.Inject("clearLastSwitchTime", func() {
 			h.lastSwitchTime.Store(time.Time{})

@@ -17,6 +17,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/disttask/framework/planner"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -64,6 +65,7 @@ type dispatcher struct {
 	taskMgr *storage.TaskManager
 	task    *proto.Task
 	logCtx  context.Context
+	planner *planner.DistPlanner
 }
 
 // MockOwnerChange mock owner change in tests.
@@ -76,6 +78,7 @@ func newDispatcher(ctx context.Context, taskMgr *storage.TaskManager, task *prot
 		taskMgr,
 		task,
 		logutil.WithKeyValue(context.Background(), "dispatcher", logPrefix),
+		nil,
 	}
 }
 
@@ -175,6 +178,13 @@ func (d *dispatcher) handleReverting() error {
 // handle task in pending state, dispatch subtasks.
 func (d *dispatcher) handlePending() error {
 	logutil.Logger(d.logCtx).Info("handle pending state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
+	if d.task.Type == proto.ImportInto {
+		d.planner = planner.NewDistPlanner(d.task)
+		_ = d.planner.BuildPlan(d.ctx)
+		res, _ := d.planner.SubmitStage()
+		handle := GetTaskFlowHandle(d.task.Type)
+		d.dispatchSubTask(d.task, handle, res)
+	}
 	return d.processNormalFlow()
 }
 
@@ -201,7 +211,13 @@ func (d *dispatcher) handleRunning() error {
 	prevStageFinished := cnt == 0
 	if prevStageFinished {
 		logutil.Logger(d.logCtx).Info("previous stage finished, generate dist plan", zap.Int64("stage", d.task.Step))
-		return d.processNormalFlow()
+		if d.task.Type == proto.ImportInto {
+			res, _ := d.planner.SubmitStage()
+			handle := GetTaskFlowHandle(d.task.Type)
+			d.dispatchSubTask(d.task, handle, res)
+		} else {
+			return d.processNormalFlow()
+		}
 	}
 	// Wait all subtasks in this stage finished.
 	GetTaskFlowHandle(d.task.Type).OnTicker(d.ctx, d.task)

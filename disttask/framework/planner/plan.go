@@ -21,8 +21,8 @@ import (
 
 type plan interface {
 	TP() string
-	Children() []plan
-	ToSubtasks() []*proto.Subtask
+	Child() plan
+	ToSubtasks(task *proto.Task) ([][]byte, error)
 }
 
 type DistPlanBuilder struct {
@@ -40,7 +40,9 @@ func (b *DistPlanBuilder) Build(ctx context.Context) (plan, error) {
 }
 
 func (b *DistPlanBuilder) buildImportIntoPlan() (plan, error) {
-	return nil, nil
+	res := &importPlan2{}
+	res.SetChildren(&importPlan1{})
+	return res, nil
 }
 
 type stage struct {
@@ -48,8 +50,9 @@ type stage struct {
 	subtasks []*proto.Subtask
 }
 
-func (s *stage) SubmitTasks() error {
-	return nil
+func (s *stage) GenerateTasks(task *proto.Task) ([][]byte, error) {
+	bytes, err := s.plan.ToSubtasks(task)
+	return bytes, err
 }
 
 func (s *stage) Finished() bool {
@@ -62,14 +65,35 @@ type DistPlanner struct {
 	finishedStages []*stage
 }
 
-func (p *DistPlanner) BuildPlan() {
-	// generate
-
-	// write to task table
+func NewDistPlanner(task *proto.Task) *DistPlanner {
+	return &DistPlanner{task, nil, nil}
 }
 
-func (p *DistPlanner) SubmitStage() error {
-	return p.stages[p.task.Step].SubmitTasks()
+func (p *DistPlanner) BuildPlan(ctx context.Context) error {
+	// generate plan.
+	builder := DistPlanBuilder{p.task}
+	plan, err := builder.Build(ctx)
+	if err != nil {
+		return err
+	}
+	// generate stage.
+	p.generateStage(plan)
+	return nil
+}
+
+func (p *DistPlanner) generateStage(plan plan) {
+	if plan.Child() != nil {
+		p.generateStage(plan.Child())
+		p.stages = append(p.stages, &stage{plan, nil})
+	} else {
+		p.stages = append(p.stages, &stage{plan, nil})
+	}
+}
+
+func (p *DistPlanner) SubmitStage() ([][]byte, error) {
+	// ywq todo
+	res, err := p.stages[p.task.Step].GenerateTasks(p.task)
+	return res, err
 }
 
 func (p *DistPlanner) IsCurrentStageFinished() bool {
