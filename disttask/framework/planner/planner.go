@@ -59,13 +59,14 @@ func (s *stage) Finished() bool {
 }
 
 type DistPlanner struct {
-	task           *proto.Task
-	stages         []*stage
-	finishedStages []*stage
+	task            *proto.Task
+	stages          []*stage
+	currentStageIdx int
+	finishedStages  []*stage
 }
 
 func NewDistPlanner(task *proto.Task) *DistPlanner {
-	return &DistPlanner{task, nil, nil}
+	return &DistPlanner{task, nil, 0, nil}
 }
 
 func (p *DistPlanner) BuildPlan(ctx context.Context) error {
@@ -91,7 +92,8 @@ func (p *DistPlanner) generateStage(plan Plan) {
 
 func (p *DistPlanner) SubmitStage() ([][]byte, error) {
 	// ywq todo
-	res, err := p.stages[p.task.Step].GenerateTasks(p.task)
+	res, err := p.stages[p.currentStageIdx].GenerateTasks(p.task)
+	p.currentStageIdx++
 	return res, err
 }
 

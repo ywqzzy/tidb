@@ -17,11 +17,12 @@ package importinto
 import (
 	"context"
 	"encoding/json"
-	"github.com/pingcap/tidb/disttask/framework/planner"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pingcap/tidb/disttask/framework/planner"
 
 	dmysql "github.com/go-sql-driver/mysql"
 	"github.com/pingcap/errors"
@@ -229,35 +230,19 @@ func (h *flowHandle) ProcessNormalFlow(ctx context.Context, handle dispatcher.Ta
 		if err = startJob(ctx, handle, taskMeta); err != nil {
 			return nil, err
 		}
-
 		h.planner = planner.NewDistPlanner(gTask)
 		_ = h.planner.BuildPlan(ctx)
 		res, _ := h.planner.SubmitStage()
+		gTask.Step = StepImport
 		return res, nil
 	case StepImport:
-		// ywq todo add it....
 		h.switchTiKV2NormalMode(ctx, gTask, logger)
 		failpoint.Inject("clearLastSwitchTime", func() {
 			h.lastSwitchTime.Store(time.Time{})
 		})
-		stepMeta, err2 := toPostProcessStep(handle, gTask, taskMeta)
-		if err2 != nil {
-			return nil, err2
-		}
-		if err = job2Step(ctx, taskMeta, importer.JobStepValidating); err != nil {
-			return nil, err
-		}
-		logger.Info("move to post-process step ", zap.Any("result", taskMeta.Result),
-			zap.Any("step-meta", stepMeta))
-		bs, err := json.Marshal(stepMeta)
-		if err != nil {
-			return nil, err
-		}
-		failpoint.Inject("failWhenDispatchPostProcessSubtask", func() {
-			failpoint.Return(nil, errors.New("injected error after StepImport"))
-		})
+		stepMeta, _ := h.planner.SubmitStage()
 		gTask.Step = StepPostProcess
-		return [][]byte{bs}, nil
+		return stepMeta, nil
 	case StepPostProcess:
 		return nil, nil
 	default:
@@ -640,4 +625,6 @@ func stepStr(step int64) string {
 
 func init() {
 	dispatcher.RegisterTaskFlowHandle(proto.ImportInto, &flowHandle{})
+	logutil.BgLogger().Info("ywq test register plan builder?")
+	planner.RegisterDistPlanBuilder(proto.ImportInto, &importPlanBuilder{})
 }
