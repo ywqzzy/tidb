@@ -17,7 +17,6 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"github.com/pingcap/tidb/disttask/framework/planner"
 	"time"
 
 	"github.com/pingcap/errors"
