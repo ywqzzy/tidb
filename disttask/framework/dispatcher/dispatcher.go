@@ -65,7 +65,6 @@ type dispatcher struct {
 	taskMgr *storage.TaskManager
 	task    *proto.Task
 	logCtx  context.Context
-	planner *planner.DistPlanner
 }
 
 // MockOwnerChange mock owner change in tests.
@@ -78,7 +77,6 @@ func newDispatcher(ctx context.Context, taskMgr *storage.TaskManager, task *prot
 		taskMgr,
 		task,
 		logutil.WithKeyValue(context.Background(), "dispatcher", logPrefix),
-		nil,
 	}
 }
 
@@ -87,13 +85,14 @@ func (d *dispatcher) executeTask() {
 	logutil.Logger(d.logCtx).Info("execute one task",
 		zap.String("state", d.task.State), zap.Uint64("concurrency", d.task.Concurrency))
 	d.scheduleTask()
+	// TODO: manage history task table.
 }
 
-// monitorTask fetch task state from tidb_global_task table.
-func (d *dispatcher) monitorTask() (err error) {
+// refreshTask fetch task state from tidb_global_task table.
+func (d *dispatcher) refreshTask() (err error) {
 	d.task, err = d.taskMgr.GetGlobalTaskByID(d.task.ID)
 	if err != nil {
-		logutil.Logger(d.logCtx).Error("monitor task failed", zap.Error(err))
+		logutil.Logger(d.logCtx).Error("refresh task failed", zap.Error(err))
 	}
 	return err
 }
@@ -108,11 +107,11 @@ func (d *dispatcher) scheduleTask() {
 			logutil.Logger(d.logCtx).Info("schedule task exits", zap.Error(d.ctx.Err()))
 			return
 		case <-ticker.C:
-			err := d.monitorTask()
+			err := d.refreshTask()
 			if err != nil {
 				continue
 			}
-			failpoint.Inject("cancelTaskAfterMonitorTask", func(val failpoint.Value) {
+			failpoint.Inject("cancelTaskAfterRefreshTask", func(val failpoint.Value) {
 				if val.(bool) && d.task.State == proto.TaskStateRunning {
 					err := d.taskMgr.CancelGlobalTask(d.task.ID)
 					if err != nil {
@@ -150,14 +149,14 @@ func (d *dispatcher) scheduleTask() {
 
 // handle task in cancelling state, dispatch revert subtasks.
 func (d *dispatcher) handleCancelling() error {
+	logutil.Logger(d.logCtx).Debug("handle cancelling state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
 	errs := []error{errors.New("cancel")}
-	logutil.Logger(d.logCtx).Info("handle cancelling state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
 	return d.processErrFlow(errs)
 }
 
 // handle task in reverting state, check all revert subtasks finished.
 func (d *dispatcher) handleReverting() error {
-	logutil.Logger(d.logCtx).Info("handle reverting state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
+	logutil.Logger(d.logCtx).Debug("handle reverting state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
 	cnt, err := d.taskMgr.GetSubtaskInStatesCnt(d.task.ID, proto.TaskStateRevertPending, proto.TaskStateReverting)
 	if err != nil {
 		logutil.Logger(d.logCtx).Warn("check task failed", zap.Error(err))
@@ -177,14 +176,14 @@ func (d *dispatcher) handleReverting() error {
 
 // handle task in pending state, dispatch subtasks.
 func (d *dispatcher) handlePending() error {
-	logutil.Logger(d.logCtx).Info("handle pending state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
+	logutil.Logger(d.logCtx).Debug("handle pending state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
 	return d.processNormalFlow()
 }
 
 // handle task in running state, check all running subtasks finished.
 // If subtasks finished, run into the next stage.
 func (d *dispatcher) handleRunning() error {
-	logutil.Logger(d.logCtx).Info("handle running state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
+	logutil.Logger(d.logCtx).Debug("handle running state", zap.String("state", d.task.State), zap.Int64("stage", d.task.Step))
 	subTaskErrs, err := d.taskMgr.CollectSubTaskError(d.task.ID)
 	if err != nil {
 		logutil.Logger(d.logCtx).Warn("collect subtask error failed", zap.Error(err))
@@ -337,7 +336,8 @@ func (d *dispatcher) dispatchSubTask(task *proto.Task, handle TaskFlowHandle, me
 		// we assign the subtask to the instance in a round-robin way.
 		pos := i % len(serverNodes)
 		instanceID := disttaskutil.GenerateExecID(serverNodes[pos].IP, serverNodes[pos].Port)
-		logutil.Logger(d.logCtx).Debug("create subtasks", zap.String("instanceID", instanceID))
+		logutil.BgLogger().Debug("create subtasks",
+			zap.Int("task.ID", int(task.ID)), zap.String("type", task.Type), zap.String("instanceID", instanceID))
 		subTasks = append(subTasks, proto.NewSubtask(task.ID, task.Type, instanceID, meta))
 	}
 
