@@ -17,6 +17,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -36,6 +37,8 @@ const (
 	DefaultSubtaskConcurrency = 16
 	// MaxSubtaskConcurrency is the maximum concurrency for handling subtask.
 	MaxSubtaskConcurrency = 256
+	// DefaultLiveNodesCheckTick is the tick interval of fetching all server infos from etcd.
+	DefaultLiveNodesCheckTick = 2
 )
 
 var (
@@ -65,6 +68,12 @@ type dispatcher struct {
 	task     *proto.Task
 	logCtx   context.Context
 	serverID string
+
+	// for HA
+	liveNodes    []*infosync.ServerInfo
+	liveNodeCnt  int
+	liveNodeIntv int
+	taskNodes    []string
 }
 
 // MockOwnerChange mock owner change in tests.
@@ -78,6 +87,10 @@ func newDispatcher(ctx context.Context, taskMgr *storage.TaskManager, serverID s
 		task,
 		logutil.WithKeyValue(context.Background(), "dispatcher", logPrefix),
 		serverID,
+		nil,
+		0,
+		DefaultLiveNodesCheckTick,
+		nil,
 	}
 }
 
@@ -206,8 +219,62 @@ func (d *dispatcher) handleRunning() error {
 		logutil.Logger(d.logCtx).Info("previous stage finished, generate dist plan", zap.Int64("stage", d.task.Step))
 		return d.processNormalFlow()
 	}
+	// Check if any node are down
+	handle := GetTaskFlowHandle(d.task.Type)
+	if len(d.taskNodes) == 0 {
+		schedulerIDs, err := d.taskMgr.GetSchedulerIDsByTaskID(d.task.ID)
+		if err != nil {
+			return err
+		}
+		d.taskNodes = schedulerIDs
+	}
+	d.liveNodeCnt++
+	if d.liveNodeCnt == d.liveNodeIntv {
+		d.liveNodeCnt = 0
+		serverInfos, err := GenerateSchedulerNodes(d.ctx)
+		if err != nil {
+			return err
+		}
+		eligibleServerInfos, err := handle.GetEligibleInstances(d.ctx, d.task)
+		if err != nil {
+			return err
+		}
+		newInfos := serverInfos[:0]
+		for _, m := range serverInfos {
+			found := false
+			for _, n := range eligibleServerInfos {
+				if m.ID == n.ID {
+					found = true
+					break
+				}
+			}
+			if found {
+				newInfos = append(newInfos, m)
+			}
+		}
+		d.liveNodes = newInfos
+	}
+	replaceNodes := make(map[string]string)
+	for _, nodeID := range d.taskNodes {
+		if ok := disttaskutil.MatchServerInfo(d.liveNodes, nodeID); !ok {
+			n := d.liveNodes[rand.Int()%len(d.liveNodes)]
+			replaceNodes[nodeID] = disttaskutil.GenerateExecID(n.IP, n.Port)
+		}
+	}
+	if err := d.taskMgr.UpdateFailedSchedulerIDs(d.task.ID, replaceNodes); err != nil {
+		return err
+	}
+	// replace local cache
+	for k, v := range replaceNodes {
+		for m, n := range d.taskNodes {
+			if n == k {
+				d.taskNodes[m] = v
+				break
+			}
+		}
+	}
 	// Wait all subtasks in this stage finished.
-	GetTaskFlowHandle(d.task.Type).OnTicker(d.ctx, d.task)
+	handle.OnTicker(d.ctx, d.task)
 	logutil.Logger(d.logCtx).Debug("handing running state, this task keeps current state", zap.String("state", d.task.State))
 	return nil
 }

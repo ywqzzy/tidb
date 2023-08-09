@@ -28,6 +28,10 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	DefaultCheckSubtaskCanceledInterval = 10 * time.Second
+)
+
 // TestSyncChan is used to sync the test.
 var TestSyncChan = make(chan struct{})
 
@@ -63,8 +67,38 @@ func NewInternalScheduler(ctx context.Context, id string, taskID int64, taskTabl
 		logCtx:    logutil.WithKeyValue(context.Background(), "scheduler", logPrefix),
 	}
 	schedulerImpl.ctx, schedulerImpl.cancel = context.WithCancel(ctx)
-
+	schedulerImpl.startCancelCheck()
 	return schedulerImpl
+}
+
+func (s *InternalSchedulerImpl) startCancelCheck() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(DefaultCheckSubtaskCanceledInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				logutil.Logger(s.logCtx).Info("scheduler exits", zap.Error(s.ctx.Err()))
+				return
+			case <-ticker.C:
+				canceled, err := s.taskTable.IsSchedulerCanceled(s.taskID, s.id)
+				if err != nil {
+					continue
+				}
+				if canceled {
+					logutil.Logger(s.logCtx).Info("scheduler canceled")
+					s.mu.RLock()
+					cancelFn := s.mu.runtimeCancel
+					s.mu.RUnlock()
+					if cancelFn != nil {
+						cancelFn()
+					}
+				}
+			}
+		}
+	}()
 }
 
 // Start starts the scheduler.
