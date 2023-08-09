@@ -37,13 +37,10 @@ var TestSyncChan = make(chan struct{})
 
 // InternalSchedulerImpl is the implementation of InternalScheduler.
 type InternalSchedulerImpl struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
 	id        string
 	taskID    int64
 	taskTable TaskTable
 	pool      Pool
-	wg        sync.WaitGroup
 	logCtx    context.Context
 
 	mu struct {
@@ -66,21 +63,19 @@ func NewInternalScheduler(ctx context.Context, id string, taskID int64, taskTabl
 		pool:      pool,
 		logCtx:    logutil.WithKeyValue(context.Background(), "scheduler", logPrefix),
 	}
-	schedulerImpl.ctx, schedulerImpl.cancel = context.WithCancel(ctx)
-	schedulerImpl.startCancelCheck()
 	return schedulerImpl
 }
 
-func (s *InternalSchedulerImpl) startCancelCheck() {
-	s.wg.Add(1)
+func (s *InternalSchedulerImpl) startCancelCheck(ctx context.Context, wg sync.WaitGroup, cancelFn context.CancelFunc) {
+	wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		defer wg.Done()
 		ticker := time.NewTicker(DefaultCheckSubtaskCanceledInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.ctx.Done():
-				logutil.Logger(s.logCtx).Info("scheduler exits", zap.Error(s.ctx.Err()))
+			case <-ctx.Done():
+				logutil.Logger(s.logCtx).Info("scheduler exits", zap.Error(ctx.Err()))
 				return
 			case <-ticker.C:
 				canceled, err := s.taskTable.IsSchedulerCanceled(s.taskID, s.id)
@@ -88,10 +83,7 @@ func (s *InternalSchedulerImpl) startCancelCheck() {
 					continue
 				}
 				if canceled {
-					logutil.Logger(s.logCtx).Info("scheduler canceled")
-					s.mu.RLock()
-					cancelFn := s.mu.runtimeCancel
-					s.mu.RUnlock()
+					logutil.Logger(s.logCtx).Debug("scheduler canceled")
 					if cancelFn != nil {
 						cancelFn()
 					}
@@ -99,21 +91,6 @@ func (s *InternalSchedulerImpl) startCancelCheck() {
 			}
 		}
 	}()
-}
-
-// Start starts the scheduler.
-func (*InternalSchedulerImpl) Start() {
-	//	s.wg.Add(1)
-	//	go func() {
-	//		defer s.wg.Done()
-	//		s.heartbeat()
-	//	}()
-}
-
-// Stop stops the scheduler.
-func (s *InternalSchedulerImpl) Stop() {
-	s.cancel()
-	s.wg.Wait()
 }
 
 // Run runs the scheduler task.
@@ -133,7 +110,6 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	s.registerCancelFunc(runCancel)
-
 	s.resetError()
 	logutil.Logger(s.logCtx).Info("scheduler run a step", zap.Any("step", task.Step), zap.Any("concurrency", task.Concurrency))
 	scheduler, err := createScheduler(ctx, task)
@@ -149,11 +125,14 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		s.onError(err)
 		return s.getError()
 	}
+	var wg sync.WaitGroup
+	s.startCancelCheck(runCtx, wg, runCancel)
 	defer func() {
 		err := scheduler.CleanupSubtaskExecEnv(runCtx)
 		if err != nil {
 			logutil.Logger(s.logCtx).Error("cleanup subtask exec env failed", zap.Error(err))
 		}
+		wg.Wait()
 	}()
 
 	minimalTaskCh := make(chan func(), task.Concurrency)

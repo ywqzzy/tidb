@@ -41,8 +41,6 @@ type Pool interface {
 
 // InternalScheduler defines the interface of an internal scheduler.
 type InternalScheduler interface {
-	Start()
-	Stop()
 	Run(context.Context, *proto.Task) error
 	Rollback(context.Context, *proto.Task) error
 }
