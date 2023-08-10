@@ -315,8 +315,6 @@ func TestScheduler(t *testing.T) {
 	})
 
 	scheduler := NewInternalScheduler(ctx, "id", 1, mockSubtaskTable, mockPool)
-	scheduler.Start()
-	defer scheduler.Stop()
 
 	// run failed
 	runSubtaskErr := errors.New("run subtask error")

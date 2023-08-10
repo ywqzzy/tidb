@@ -261,8 +261,6 @@ func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType str
 	}
 	// runCtx only used in scheduler.Run, cancel in m.fetchAndFastCancelTasks.
 	scheduler := m.newScheduler(ctx, m.id, taskID, m.taskTable, m.subtaskExecutorPools[taskType])
-	scheduler.Start()
-	defer scheduler.Stop()
 	for {
 		select {
 		case <-ctx.Done():

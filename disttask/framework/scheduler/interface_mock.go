@@ -69,6 +69,12 @@ func (t *MockTaskTable) UpdateSubtaskStateAndError(id int64, state string, _ err
 	return args.Error(0)
 }
 
+// IsSchedulerCanceled implements SubtaskTable.IsSchedulerCanceled
+func (t *MockTaskTable) IsSchedulerCanceled(taskID int64, execid string) (bool, error) {
+	args := t.Called(taskID, execid)
+	return args.Bool(0), args.Error(1)
+}
+
 // FinishSubtask implements SubtaskTable.FinishSubtask
 func (t *MockTaskTable) FinishSubtask(id int64, meta []byte) error {
 	args := t.Called(id, meta)
