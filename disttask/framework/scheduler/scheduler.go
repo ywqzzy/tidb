@@ -103,7 +103,7 @@ func (s *InternalSchedulerImpl) Run(ctx context.Context, task *proto.Task) error
 	if s.mu.handled {
 		return err
 	}
-	return s.taskTable.UpdateErrorToSubtask(s.id, err)
+	return s.taskTable.UpdateErrorToSubtask(s.id, s.taskID, err)
 }
 
 func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error {
@@ -119,8 +119,11 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		return s.getError()
 	}
 
-	failpoint.Inject("mockExecSubtaskInitEnvErr", func() {
-		failpoint.Return(errors.New("mockExecSubtaskInitEnvErr"))
+	failpoint.Inject("mockExecSubtaskInitEnvErr", func(val failpoint.Value) {
+		if val.(bool) {
+			logutil.BgLogger().Info("failpoint trigger")
+			failpoint.Return(errors.New("mockExecSubtaskInitEnvErr"))
+		}
 	})
 	if err := scheduler.InitSubtaskExecEnv(runCtx); err != nil {
 		s.onError(err)
@@ -143,18 +146,20 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 	}
 
 	for {
-		// check if any error occurs
-		if err := s.getError(); err != nil {
-			break
-		}
-
 		subtask, err := s.taskTable.GetSubtaskInStates(s.id, task.ID, proto.TaskStatePending)
 		if err != nil {
 			s.onError(err)
-			break
 		}
+		// ywq todo
 		if subtask == nil {
-			break
+			logutil.BgLogger().Info("ywq test err handle....")
+			runningSubtask, err := s.taskTable.GetSubtaskInStates(s.id, task.ID, proto.TaskStateRunning)
+			if err != nil {
+				s.onError(err)
+				continue
+			}
+			s.onSubtaskFinished(ctx, scheduler, runningSubtask)
+			continue
 		}
 		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRunning, nil)
 		if err := s.getError(); err != nil {
@@ -165,6 +170,7 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 	return s.getError()
 }
 
+// todo check
 func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Scheduler, subtask *proto.Subtask, step int64, minimalTaskCh chan func()) {
 	minimalTasks, err := scheduler.SplitSubtask(ctx, subtask.Meta)
 	if err != nil {
@@ -216,9 +222,16 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 		s.markErrorHandled()
 		return
 	}
+	failpoint.Inject("mockFinishSubtaskErr", func(val failpoint.Value) {
+		if val.(bool) {
+			s.onError(errors.New("mockFinishSubtaskErr"))
+			failpoint.Return()
+		}
+	})
 	if err := s.taskTable.FinishSubtask(subtask.ID, subtaskMeta); err != nil {
 		s.onError(err)
 	}
+
 	failpoint.Inject("syncAfterSubtaskFinish", func() {
 		TestSyncChan <- struct{}{}
 		<-TestSyncChan

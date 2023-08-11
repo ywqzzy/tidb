@@ -272,6 +272,23 @@ func (stm *TaskManager) GetGlobalTaskByKey(key string) (task *proto.Task, err er
 }
 
 // row2SubTask converts a row to a subtask.
+// ywq todo
+
+// id bigint not null auto_increment primary key,
+// step int,
+// namespace varchar(256),
+// task_key varchar(256),
+// ddl_physical_tid bigint(20),
+// type int,
+// exec_id varchar(256),
+// exec_expired timestamp,
+// state varchar(64) not null,
+// checkpoint longblob not null,
+// start_time bigint,
+// state_update_time bigint,
+// meta longblob,
+// error BLOB,
+// key idx_task_key(task_key))`
 func row2SubTask(r chunk.Row) *proto.Subtask {
 	task := &proto.Subtask{
 		ID:          r.GetInt64(0),
@@ -286,6 +303,7 @@ func row2SubTask(r chunk.Row) *proto.Subtask {
 	if err != nil {
 		logutil.BgLogger().Warn("unexpected task ID", zap.String("task ID", r.GetString(3)))
 	}
+	logutil.BgLogger().Info("ywq test error", zap.Any("err", r.GetBytes(13)))
 	task.TaskID = int64(tid)
 	return task
 }
@@ -320,14 +338,37 @@ func (stm *TaskManager) GetSubtaskInStates(tidbID string, taskID int64, states .
 }
 
 // UpdateErrorToSubtask updates the error to subtask.
-func (stm *TaskManager) UpdateErrorToSubtask(tidbID string, err error) error {
+// ywq test
+func (stm *TaskManager) UpdateErrorToSubtask(tidbID string, taskKey int64, err error) error {
 	if err == nil {
 		return nil
 	}
+	logutil.BgLogger().Info("ywq test taskKey", zap.Any("taskKey", taskKey), zap.Any("error", err))
+	stm.PrintAllSubtask(tidbID)
 	_, err1 := stm.executeSQLWithNewSession(stm.ctx,
-		"update mysql.tidb_background_subtask set state = %?, error = %? where exec_id = %? and state = %? limit 1;",
-		proto.TaskStateFailed, serializeErr(err), tidbID, proto.TaskStatePending)
+		"update mysql.tidb_background_subtask set state = %?, error = %? where exec_id = %? and state = %? and task_key = %? limit 1;",
+		proto.TaskStateFailed, serializeErr(err), tidbID, taskKey, proto.TaskStatePending)
+	stm.PrintAllSubtask(tidbID)
 	return err1
+}
+
+func (stm *TaskManager) PrintAllSubtask(tidbID string) {
+	rs, _ := stm.executeSQLWithNewSession(stm.ctx,
+		"select * from mysql.tidb_background_subtask where exec_id = %?", tidbID)
+	for _, r := range rs {
+		errBytes := r.GetBytes(13)
+		var err error
+		if len(errBytes) > 0 {
+			stdErr := errors.Normalize("")
+			err1 := stdErr.UnmarshalJSON(errBytes)
+			if err1 != nil {
+				err = err1
+			} else {
+				err = stdErr
+			}
+		}
+		logutil.BgLogger().Info(fmt.Sprintf("subTask: %v\n", row2SubTask(r)), zap.Error(err))
+	}
 }
 
 // PrintSubtaskInfo log the subtask info by taskKey.
@@ -426,6 +467,7 @@ func (stm *TaskManager) UpdateSubtaskStateAndError(id int64, state string, subTa
 	return err
 }
 
+// 如果更新失败怎么办？
 // FinishSubtask updates the subtask meta and mark state to succeed.
 func (stm *TaskManager) FinishSubtask(id int64, meta []byte) error {
 	_, err := stm.executeSQLWithNewSession(stm.ctx, "update mysql.tidb_background_subtask set meta = %?, state = %? where id = %?", meta, proto.TaskStateSucceed, id)

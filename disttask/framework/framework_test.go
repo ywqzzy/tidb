@@ -17,6 +17,7 @@ package framework_test
 import (
 	"context"
 	"errors"
+	"github.com/pingcap/tidb/util/logutil"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -186,6 +187,62 @@ func DispatchTaskAndCheckFail(taskKey string, t *testing.T, v *atomic.Int64) {
 	v.Store(0)
 }
 
+func DispatchMultipleTasks(t *testing.T, taskNum int) (taskIds []int64) {
+	mgr, err := storage.GetTaskManager()
+	require.NoError(t, err)
+
+	for i := 0; i < taskNum; i++ {
+		taskID, err := mgr.AddNewGlobalTask("key"+string(rune(i)), proto.TaskTypeExample, 8, nil)
+		require.NoError(t, err)
+		taskIds = append(taskIds, taskID)
+	}
+	return
+}
+
+func CheckTasks(t *testing.T, taskIds []int64, successCnt, failCnt int) {
+	mgr, err := storage.GetTaskManager()
+	start := time.Now()
+	var task *proto.Task
+	actualSuccessCnt := 0
+	actualFailCnt := 0
+	finishedCnt := 0
+
+	for i := 0; i < len(taskIds); i++ {
+		for {
+			if time.Since(start) > 1*time.Minute {
+				break
+				//require.FailNow(t, "timeout")
+			}
+			time.Sleep(time.Second)
+			task, err = mgr.GetGlobalTaskByID(taskIds[i])
+			require.NoError(t, err)
+			require.NotNil(t, task)
+			if task.State != proto.TaskStatePending && task.State != proto.TaskStateRunning && task.State != proto.TaskStateCancelling && task.State != proto.TaskStateReverting {
+				if task.State == proto.TaskStateReverted || task.State == proto.TaskStateFailed || task.State == proto.TaskStateCanceled {
+					actualFailCnt++
+				} else {
+					actualSuccessCnt++
+				}
+				finishedCnt++
+				break
+			}
+		}
+	}
+	mgr.PrintSubtaskInfo(1)
+	logutil.BgLogger().Info("---------")
+	mgr.PrintSubtaskInfo(2)
+	logutil.BgLogger().Info("---------")
+	mgr.PrintSubtaskInfo(3)
+	logutil.BgLogger().Info("---------")
+	mgr.PrintSubtaskInfo(4)
+	logutil.BgLogger().Info("---------")
+
+	require.Equal(t, successCnt, actualSuccessCnt)
+	require.Equal(t, failCnt, actualFailCnt)
+	require.Equal(t, successCnt+failCnt, finishedCnt)
+	//subtasks, _ := mgr.GetSubtasksByStep(1, 1)
+}
+
 func TestFrameworkBasic(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
@@ -303,7 +360,7 @@ func TestFrameworkSubTaskInitEnvFailed(t *testing.T) {
 	var v atomic.Int64
 	RegisterTaskMeta(&v)
 	distContext := testkit.NewDistExecutionContext(t, 1)
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockExecSubtaskInitEnvErr", "return()"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockExecSubtaskInitEnvErr", "return(true)"))
 	defer func() {
 		require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockExecSubtaskInitEnvErr"))
 	}()
@@ -324,5 +381,21 @@ func TestOwnerChange(t *testing.T) {
 	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockOwnerChange", "1*return(true)"))
 	DispatchTaskAndCheckSuccess("😊", t, &v)
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockOwnerChange"))
+	distContext.Close()
+}
+
+func TestFinishSubtaskErr(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+
+	var v atomic.Int64
+	RegisterTaskMeta(&v)
+	distContext := testkit.NewDistExecutionContext(t, 1)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockFinishSubtaskErr", "1*return(true)"))
+	defer func() {
+		require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockFinishSubtaskErr"))
+	}()
+	taskIds := DispatchMultipleTasks(t, 4)
+	CheckTasks(t, taskIds, 4, 0)
 	distContext.Close()
 }
