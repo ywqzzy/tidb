@@ -272,23 +272,6 @@ func (stm *TaskManager) GetGlobalTaskByKey(key string) (task *proto.Task, err er
 }
 
 // row2SubTask converts a row to a subtask.
-// ywq todo
-
-// id bigint not null auto_increment primary key,
-// step int,
-// namespace varchar(256),
-// task_key varchar(256),
-// ddl_physical_tid bigint(20),
-// type int,
-// exec_id varchar(256),
-// exec_expired timestamp,
-// state varchar(64) not null,
-// checkpoint longblob not null,
-// start_time bigint,
-// state_update_time bigint,
-// meta longblob,
-// error BLOB,
-// key idx_task_key(task_key))`
 func row2SubTask(r chunk.Row) *proto.Subtask {
 	task := &proto.Subtask{
 		ID:          r.GetInt64(0),

@@ -69,11 +69,6 @@ func NewInternalScheduler(ctx context.Context, id string, taskID int64, taskTabl
 
 // Start starts the scheduler.
 func (*InternalSchedulerImpl) Start() {
-	//	s.wg.Add(1)
-	//	go func() {
-	//		defer s.wg.Done()
-	//		s.heartbeat()
-	//	}()
 }
 
 // Stop stops the scheduler.
@@ -81,21 +76,6 @@ func (s *InternalSchedulerImpl) Stop() {
 	s.cancel()
 	s.wg.Wait()
 }
-
-//	func (s *InternalSchedulerImpl) heartbeat() {
-//		ticker := time.NewTicker(proto.HeartbeatInterval)
-//		for {
-//			select {
-//			case <-s.ctx.Done():
-//				return
-//			case <-ticker.C:
-//				if err := s.subtaskTable.UpdateHeartbeat(s.id, s.taskID, time.Now()); err != nil {
-//					s.onError(err)
-//					return
-//				}
-//			}
-//		}
-//	}
 
 // Run runs the scheduler task.
 func (s *InternalSchedulerImpl) Run(ctx context.Context, task *proto.Task) error {
@@ -150,7 +130,7 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		if err != nil {
 			s.onError(err)
 		}
-		// ywq todo
+
 		if subtask == nil {
 			logutil.BgLogger().Info("ywq test err handle....")
 			runningSubtask, err := s.taskTable.GetSubtaskInStates(s.id, task.ID, proto.TaskStateRunning)
@@ -170,7 +150,6 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 	return s.getError()
 }
 
-// todo check
 func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Scheduler, subtask *proto.Subtask, step int64, minimalTaskCh chan func()) {
 	minimalTasks, err := scheduler.SplitSubtask(ctx, subtask.Meta)
 	if err != nil {
@@ -222,6 +201,7 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 		s.markErrorHandled()
 		return
 	}
+	// Eg: tikv network partitioned.
 	failpoint.Inject("mockFinishSubtaskErr", func(val failpoint.Value) {
 		if val.(bool) {
 			s.onError(errors.New("mockFinishSubtaskErr"))
@@ -236,6 +216,10 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 		TestSyncChan <- struct{}{}
 		<-TestSyncChan
 	})
+
+	// 没有更新subtask成为 success 状态，导致 dispatcher 无法推进。
+	// 1. scheduler 节点网络隔离了，那么把subtask迁移到其他节点。
+	// 2. tikv 网络隔离了，那么scheduler retry一次就可以解决问题。
 }
 
 func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, minimalTask proto.MinimalTask, tp string, step int64) {

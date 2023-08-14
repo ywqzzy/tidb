@@ -394,7 +394,6 @@ func splitTableRanges(t table.PhysicalTable, store kv.Storage, startKey, endKey 
 		return []kv.KeyRange{kvRange}, nil
 	}
 
-	// ywq todo how to use backoff.
 	maxSleep := 10000 // ms
 	bo := backoff.NewBackofferWithVars(context.Background(), maxSleep, nil)
 	rc := copr.NewRegionCache(s.GetRegionCache())
