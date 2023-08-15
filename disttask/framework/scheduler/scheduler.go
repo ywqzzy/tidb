@@ -138,8 +138,15 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 				s.onError(err)
 				continue
 			}
+			if runningSubtask == nil {
+				break
+			}
+			logutil.BgLogger().Info("ywq test running subtask...")
 			s.onSubtaskFinished(ctx, scheduler, runningSubtask)
-			continue
+			if err := s.getError(); err != nil {
+				continue
+			}
+			break
 		}
 		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRunning, nil)
 		if err := s.getError(); err != nil {
@@ -158,6 +165,9 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateCanceled, nil)
 		} else {
 			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError())
+		}
+		if err := s.getError(); err != nil {
+			return
 		}
 		s.markErrorHandled()
 		return
@@ -198,6 +208,9 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 		} else {
 			s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateFailed, s.getError())
 		}
+		if err := s.getError(); err != nil {
+			return
+		}
 		s.markErrorHandled()
 		return
 	}
@@ -216,10 +229,6 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 		TestSyncChan <- struct{}{}
 		<-TestSyncChan
 	})
-
-	// 没有更新subtask成为 success 状态，导致 dispatcher 无法推进。
-	// 1. scheduler 节点网络隔离了，那么把subtask迁移到其他节点。
-	// 2. tikv 网络隔离了，那么scheduler retry一次就可以解决问题。
 }
 
 func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, minimalTask proto.MinimalTask, tp string, step int64) {
@@ -310,8 +319,8 @@ func (s *InternalSchedulerImpl) Rollback(ctx context.Context, task *proto.Task) 
 
 	err = scheduler.Rollback(rollbackCtx)
 	if err != nil {
-		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRevertFailed, nil)
 		s.onError(err)
+		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateRevertFailed, nil)
 	} else {
 		s.updateSubtaskStateAndError(subtask.ID, proto.TaskStateReverted, nil)
 	}

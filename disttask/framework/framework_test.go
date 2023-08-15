@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,8 +409,8 @@ func TestFinishSubtaskErr(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
 
-	var v atomic.Int64
-	RegisterTaskMeta(&v)
+	var m sync.Map
+	RegisterTaskMeta(&m)
 	distContext := testkit.NewDistExecutionContext(t, 1)
 	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockFinishSubtaskErr", "1*return(true)"))
 	defer func() {
