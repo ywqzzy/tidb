@@ -41,7 +41,7 @@ func TestPipelineAsyncBasic(t *testing.T) {
 }
 
 func TestPipelineAsyncMultiOperators(t *testing.T) {
-	words := `Bob hit a ball, the hit BALL flew far after it was hit.`
+	words := `Bob hiT a ball, the hIt BALL flew far after it was hit.`
 	var mostCommonWord string
 	splitter := makeSplitter(words)
 	lower := makeLower()
@@ -53,7 +53,7 @@ func TestPipelineAsyncMultiOperators(t *testing.T) {
 	Compose[string](c, lower, counter)
 	Compose[strCnt](c, counter, collector)
 
-	pipeline := NewAsyncPipeline(c, splitter, counter, collector)
+	pipeline := NewAsyncPipeline(c, splitter, lower, counter, collector)
 	err := pipeline.Execute()
 	require.NoError(t, err)
 	pipeline.Close()
