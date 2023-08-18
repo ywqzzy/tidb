@@ -26,11 +26,11 @@ type Operator interface {
 }
 
 type Data[T any] interface {
-	Read() (T, error)
-	Write(data T) error
-	Close() error
-	Start() error
-	Display() string
+	read() (T, error)
+	write(data T) error
+	close() error
+	open() error
+	display() string
 }
 
 // BaseOperator have DataSource and DataSink.
@@ -39,8 +39,34 @@ type BaseOperator[T any, U any] struct {
 	Sink   Data[U]
 }
 
+type OperatorWrapper[T, U any] struct {
+	BaseOperator[T, U]
+}
+
+// read from source.
+func (r *OperatorWrapper[T, U]) read() (T, error) {
+	return r.Source.read()
+}
+
+// write to sink.
+func (r *OperatorWrapper[T, U]) write(data U) error {
+	return r.Sink.write(data)
+}
+
+func Compose[T, U, W any](op *OperatorWrapper[T, U], op1 *OperatorWrapper[U, W], data *AsyncData[U]) {
+	op.Sink = data
+	op1.Source = data
+}
+
 type Pipeline struct {
 	ops []Operator
+}
+
+// NewPipeline create a new AsyncPipeline.
+func NewPipeline(ops ...Operator) *Pipeline {
+	return &Pipeline{
+		ops: ops,
+	}
 }
 
 // Execute start all operators waiting to handle tasks.
@@ -98,26 +124,26 @@ type AsyncData[T any] struct {
 }
 
 // Next read data.
-func (*AsyncData[T]) Read() (T, error) {
+func (*AsyncData[T]) read() (T, error) {
 	var res T
 	return res, nil
 }
 
-func (d *AsyncData[T]) Close() error {
+func (d *AsyncData[T]) close() error {
 	d.Channel.ReleaseAndWait()
 	return nil
 }
 
-func (d *AsyncData[T]) Start() error {
+func (d *AsyncData[T]) open() error {
 	d.Channel.Start()
 	return nil
 }
 
 // Display show the name.
-func (*AsyncData[T]) Display() string { return "AsyncDataChannel" }
+func (*AsyncData[T]) display() string { return "AsyncDataChannel" }
 
 // Write data to sink.
-func (c *AsyncData[T]) Write(data T) error {
+func (c *AsyncData[T]) write(data T) error {
 	c.Channel.AddTask(data)
 	return nil
 }
@@ -132,12 +158,24 @@ type demoChunk struct {
 }
 
 type exampleOperator struct {
-	BaseOperator[asyncChunk, asyncChunk]
+	OperatorWrapper[asyncChunk, asyncChunk]
+}
+
+func NewExampleOperatorWithSource(source Data[asyncChunk]) *exampleOperator {
+	res := &exampleOperator{}
+	res.Source = source
+	return res
+}
+
+func NewExampleOperatorWithSink(sink Data[asyncChunk]) *exampleOperator {
+	res := &exampleOperator{}
+	res.Sink = sink
+	return res
 }
 
 // Close implements AsyncOperator.
 func (oi *exampleOperator) close() error {
-	return oi.Source.Close()
+	return oi.Source.close()
 }
 
 // Open implements AsyncOperator.
@@ -147,13 +185,13 @@ func (oi *exampleOperator) open() error {
 			return &asyncWorker{oi.Sink}
 		},
 	)
-	oi.Source.Start()
+	_ = oi.Source.open()
 	return nil
 }
 
 // Display implements AsyncOperator.
 func (oi *exampleOperator) display() string {
-	return "ExampleAsyncOperator{ source: " + oi.Source.Display() + ", sink: " + oi.Sink.Display() + "}"
+	return "ExampleAsyncOperator{source: " + oi.Source.display() + ", sink: " + oi.Sink.display() + "}"
 }
 
 type asyncWorker struct {
@@ -163,7 +201,7 @@ type asyncWorker struct {
 // HandleTask define the basic running process for each operator.
 func (aw *asyncWorker) HandleTask(task asyncChunk) {
 	task.res.res++
-	_ = aw.sink.Write(task)
+	_ = aw.sink.write(task)
 }
 
 // Close implement the Close interface for workerpool.
@@ -174,15 +212,15 @@ type simpleData struct {
 	mu  sync.Mutex
 }
 
-func (*simpleData) Start() error {
+func (*simpleData) open() error {
 	return nil
 }
 
-func (*simpleData) Close() error {
+func (*simpleData) close() error {
 	return nil
 }
 
-func (s *simpleData) Write(data asyncChunk) error {
+func (s *simpleData) write(data asyncChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	innerVal := data
@@ -190,13 +228,13 @@ func (s *simpleData) Write(data asyncChunk) error {
 	return nil
 }
 
-func (s *simpleData) Read() (asyncChunk, error) {
+func (s *simpleData) read() (asyncChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return asyncChunk{res: &demoChunk{s.Res}}, nil
 }
 
 // Display show the DataSink.
-func (*simpleData) Display() string {
+func (*simpleData) display() string {
 	return "simpleDataSink"
 }

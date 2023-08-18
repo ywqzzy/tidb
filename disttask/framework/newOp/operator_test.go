@@ -15,41 +15,37 @@
 package newOp
 
 import (
+	"fmt"
 	"github.com/pingcap/tidb/resourcemanager/pool/workerpool"
 	poolutil "github.com/pingcap/tidb/resourcemanager/util"
 	"github.com/pingcap/tidb/util/logutil"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"testing"
 )
 
-func newPipe() {
-	op1 := &exampleOperator{}
+func newPipe(t *testing.T) {
 	pool, _ := workerpool.NewWorkerPoolWithoutCreateWorker[asyncChunk]("test", poolutil.DDL, 10)
-	data := &AsyncData[asyncChunk]{Channel: pool}
 	pool2, _ := workerpool.NewWorkerPoolWithoutCreateWorker[asyncChunk]("test2", poolutil.DDL, 10)
-	data2 := &AsyncData[asyncChunk]{Channel: pool2}
-
+	data := &AsyncData[asyncChunk]{Channel: pool}
+	channel := &AsyncData[asyncChunk]{Channel: pool2}
 	data3 := &simpleData{}
-	op2 := &exampleOperator{}
-
-	op1.Source = data
-	op2.Source = data2
-	op1.Sink = data2
-	op2.Sink = data3
-
-	pipe := &Pipeline{}
-	pipe.AddOperator(op1)
-	pipe.AddOperator(op2)
-	pipe.Display()
-	pipe.Execute()
+	op1 := NewExampleOperatorWithSource(data)
+	op2 := NewExampleOperatorWithSink(data3)
+	Compose[asyncChunk, asyncChunk, asyncChunk](&op1.OperatorWrapper, &op2.OperatorWrapper, channel)
+	pipe := NewPipeline(op1, op2)
+	logutil.BgLogger().Info(fmt.Sprintf("display %s", pipe.Display()))
+	err := pipe.Execute()
+	require.NoError(t, err)
 	for i := 0; i < 20; i++ {
-		data.Write(asyncChunk{res: &demoChunk{1}})
+		err := data.write(asyncChunk{res: &demoChunk{1}})
+		require.NoError(t, err)
 	}
-	pipe.Close()
-
+	err = pipe.Close()
+	require.NoError(t, err)
 	logutil.BgLogger().Info("res", zap.Int("res", data3.Res))
 }
 
 func TestPipelineAsync(t *testing.T) {
-	newPipe()
+	newPipe(t)
 }
