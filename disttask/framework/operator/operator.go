@@ -120,3 +120,18 @@ func Compose[A any](composer *ComposeOperator, op1 DataSource[A], op2 DataSink[A
 		}
 	})
 }
+
+type NoopOperator struct {
+}
+
+func (n NoopOperator) Open() error {
+	return nil
+}
+
+func (n NoopOperator) Close() error {
+	return nil
+}
+
+func (n NoopOperator) Display() string {
+	return ""
+}

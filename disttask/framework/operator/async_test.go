@@ -15,6 +15,8 @@
 package operator
 
 import (
+	"strings"
+	"sync"
 	"testing"
 
 	poolutil "github.com/pingcap/tidb/resourcemanager/util"
@@ -39,15 +41,68 @@ func TestPipelineAsyncBasic(t *testing.T) {
 }
 
 func TestPipelineAsyncMultiOperators(t *testing.T) {
-	words := `
-Lorem ipsum dolor sit amet, consectetur adipiscing elit,
-sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
-Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris
-nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in
-reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla
-pariatur. Excepteur sint occaecat cupidatat non proident,
-sunt in culpa qui officia deserunt mollit anim id est laborum
-`
+	words := `Bob hit a ball, the hit BALL flew far after it was hit.`
+	var mostCommonWord string
+	splitter := makeSplitter(words)
+	lower := makeLower()
+	counter := makeCounter()
+	collector := makeCollector(&mostCommonWord)
 
-	src := newExampleSource(20)
+	c := &ComposeOperator{}
+	Compose[string](c, splitter, lower)
+	Compose[string](c, lower, counter)
+	Compose[strCnt](c, counter, collector)
+
+	pipeline := NewAsyncPipeline(c, splitter, counter, collector)
+	err := pipeline.Execute()
+	require.NoError(t, err)
+	pipeline.Close()
+	require.Equal(t, mostCommonWord, "hit")
+}
+
+type strCnt struct {
+	str string
+	cnt int
+}
+
+func makeSplitter(s string) simpleSource[string] {
+	ss := strings.Split(s, " ")
+	src := newSimpleSource(func() string {
+		if len(ss) == 0 {
+			return ""
+		}
+		ret := ss[0]
+		ss = ss[1:]
+		return ret
+	})
+	return src
+}
+
+func makeLower() *simpleOperator[string, string] {
+	return newSimpleOperator(strings.ToLower, 3)
+}
+
+func makeCounter() *simpleOperator[string, strCnt] {
+	strCntMap := make(map[string]int)
+	strCntMapMu := sync.Mutex{}
+	return newSimpleOperator(func(s string) strCnt {
+		strCntMapMu.Lock()
+		old := strCntMap[s]
+		strCntMap[s] = old + 1
+		strCntMapMu.Unlock()
+		return strCnt{s, old + 1}
+	}, 3)
+}
+
+func makeCollector(v *string) *simpleSink[strCnt] {
+	maxCnt := 0
+	maxMu := sync.Mutex{}
+	return newSimpleSink(func(sc strCnt) {
+		maxMu.Lock()
+		if sc.cnt > maxCnt {
+			maxCnt = sc.cnt
+			*v = sc.str
+		}
+		maxMu.Unlock()
+	})
 }

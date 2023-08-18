@@ -15,43 +15,46 @@
 package operator
 
 import (
+	"io"
+
 	"github.com/pingcap/tidb/resourcemanager/pool/workerpool"
 	"github.com/pingcap/tidb/resourcemanager/util"
-	"io"
 )
 
-type simpleSource[T interface{}] struct {
+type simpleSource[T comparable] struct {
 	generator func() T
+	NoopOperator
 }
 
-func (s *simpleSource[T]) Read() (T, error) {
+func newSimpleSource[T comparable](generator func() T) simpleSource[T] {
+	return simpleSource[T]{generator: generator}
+}
+
+func (s simpleSource[T]) Read() (T, error) {
 	res := s.generator()
-	if res == nil {
-		var zT T
+	var zT T
+	if res == zT {
 		return zT, io.EOF
 	}
 	return res, nil
 }
 
-func (s *simpleSource[T]) Display() string {
+func (s simpleSource[T]) Display() string {
 	return "simpleSource"
-}
-
-func newSimpleSource[T any](generator func() T) simpleSource[T] {
-	return simpleSource[T]{generator: generator}
 }
 
 type simpleSink[R interface{}] struct {
 	drainer func(R)
+	NoopOperator
+}
+
+func newSimpleSink[R interface{}](drainer func(R)) *simpleSink[R] {
+	return &simpleSink[R]{drainer: drainer}
 }
 
 func (s *simpleSink[R]) Write(data R) error {
-	res := s.drainer()
-	if res == nil {
-		var zT T
-		return zT, io.EOF
-	}
-	return res, nil
+	s.drainer(data)
+	return nil
 }
 
 func (s *simpleSink[R]) Display() string {
@@ -63,16 +66,16 @@ type simpleOperator[T, R any] struct {
 	transform func(T) R
 }
 
-func (s simpleOperator[T, R]) Display() string {
+func (s *simpleOperator[T, R]) Display() string {
 	return "simpleOperator"
 }
 
-func newSimpleOperator[T, R any](transform func(task T) R, concurrency int) simpleOperator[T, R] {
+func newSimpleOperator[T, R any](transform func(task T) R, concurrency int) *simpleOperator[T, R] {
 	pool, _ := workerpool.NewWorkerPool("simple", util.UNKNOWN, concurrency,
 		func() workerpool.Worker[T, R] {
 			return simpleWorker[T, R]{transform: transform}
 		})
-	return simpleOperator[T, R]{
+	return &simpleOperator[T, R]{
 		AsyncOperator: AsyncOperator[T, R]{channel: pool},
 	}
 }
