@@ -17,8 +17,7 @@ package operator
 // DataSource defines interface for source of all operators.
 // Operator read data from DataSource, then process the read data.
 type DataSource[T any] interface {
-	Start() error
-	Next() (T, error)
+	Read() (T, error)
 	Display() string
 }
 
@@ -27,4 +26,13 @@ type DataSource[T any] interface {
 type DataSink[T any] interface {
 	Write(data T) error
 	Display() string
+
+	Close() error
+}
+
+type DataSourceSink[T, R any] interface {
+	Read() (R, error)
+	Write(data T) error
+
+	Close() error
 }

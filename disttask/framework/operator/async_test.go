@@ -15,69 +15,25 @@
 package operator
 
 import (
-	"sync"
 	"testing"
 
 	poolutil "github.com/pingcap/tidb/resourcemanager/util"
 	"github.com/stretchr/testify/require"
 )
 
-func NewAsyncPipeline() (*AsyncPipeline, DataSource[asyncChunk]) {
-	sink := &simpleDataSink{0, sync.Mutex{}}
-	op1 := newExampleAsyncOperator("op1", poolutil.DDL, 10, sink)
-	op0 := newExampleAsyncOperator("op0", poolutil.DDL, 10, op1.Source.(DataSink[asyncChunk]))
-	pipeline := &AsyncPipeline{}
-	pipeline.AddOperator(op0)
-	pipeline.AddOperator(op1)
-	return pipeline, op0.Source
-}
+func TestPipelineAsyncBasic(t *testing.T) {
+	src := newExampleSource(20)
+	op0 := newExampleOperator("op0", poolutil.DDL, 10)
+	sink := newExampleSink(0)
 
-func NewAsyncPipelineWithSource() *AsyncPipeline {
-	sink := &simpleDataSink{0, sync.Mutex{}}
-	op1 := newExampleAsyncOperator("op1", poolutil.DDL, 10, sink)
-	op0 := newExampleSourceOperator("op0", poolutil.DDL, 10, op1.Source.(DataSink[asyncChunk]))
-	pipeline := &AsyncPipeline{}
-	pipeline.AddOperator(op0)
-	pipeline.AddOperator(op1)
-	return pipeline
-}
+	comp := &ComposeOperator{}
+	Compose[asyncChunk](comp, src, op0)
+	Compose[asyncChunk](comp, op0, sink)
 
-func NewAsyncPipelineWithSource3Operator() *AsyncPipeline {
-	sink := &simpleDataSink{0, sync.Mutex{}}
-	op2 := newExampleAsyncOperator("op2", poolutil.DDL, 10, sink)
-	op1 := newExampleAsyncOperator("op1", poolutil.DDL, 10, op2.Source.(DataSink[asyncChunk]))
-	op0 := newExampleSourceOperator("op0", poolutil.DDL, 10, op1.Source.(DataSink[asyncChunk]))
-	pipeline := &AsyncPipeline{}
-	pipeline.AddOperator(op0)
-	pipeline.AddOperator(op1)
-	pipeline.AddOperator(op2)
-	return pipeline
-}
-
-func TestPipelineAsync(t *testing.T) {
-	pipeline, source := NewAsyncPipeline()
+	pipeline := NewAsyncPipeline(comp, src, op0, sink)
 	err := pipeline.Execute()
 	require.NoError(t, err)
-	for i := 0; i < 10; i++ {
-		_ = source.(*AsyncDataChannel[asyncChunk]).Write(asyncChunk{&demoChunk{0}})
-	}
 	pipeline.Close()
-	require.Equal(t, "ExampleAsyncOperator{ source: AsyncDataChannel, sink: AsyncDataChannel}\n ExampleAsyncOperator{ source: AsyncDataChannel, sink: simpleDataSink}", pipeline.Display())
-	require.Equal(t, 20, pipeline.LastOperator().(*exampleAsyncOperator).Sink.(*simpleDataSink).Res)
-}
-
-func TestPipelineAsyncWithSource(t *testing.T) {
-	p := NewAsyncPipelineWithSource()
-	require.Equal(t, "ExampleSourceOperator{ source: simpleDataSource, sink: AsyncDataChannel}\n ExampleAsyncOperator{ source: AsyncDataChannel, sink: simpleDataSink}", p.Display())
-	p.Execute()
-	p.Close()
-	require.Equal(t, 20, p.LastOperator().(*exampleAsyncOperator).Sink.(*simpleDataSink).Res)
-}
-
-func TestPipelineAsyncWithSource3Operator(t *testing.T) {
-	p := NewAsyncPipelineWithSource3Operator()
-	require.Equal(t, "ExampleSourceOperator{ source: simpleDataSource, sink: AsyncDataChannel}\n ExampleAsyncOperator{ source: AsyncDataChannel, sink: AsyncDataChannel}\n  ExampleAsyncOperator{ source: AsyncDataChannel, sink: simpleDataSink}", p.Display())
-	p.Execute()
-	p.Close()
-	require.Equal(t, 30, p.LastOperator().(*exampleAsyncOperator).Sink.(*simpleDataSink).Res)
+	require.Equal(t, "ComposeOperator\n simpleDataSource[asyncChunk]\n  AsyncOperator[operator.asyncChunk, operator.asyncChunk]\n   simpleDataSink[asyncChunk]", pipeline.Display())
+	require.Equal(t, 20, sink.Res)
 }

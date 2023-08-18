@@ -15,7 +15,7 @@
 package operator
 
 import (
-	"errors"
+	"io"
 	"sync"
 
 	"github.com/pingcap/tidb/resourcemanager/pool/workerpool"
@@ -31,51 +31,26 @@ type demoChunk struct {
 	res int
 }
 
-type exampleAsyncOperator struct {
-	BaseOperator[asyncChunk, asyncChunk]
-}
-
-// Close implements AsyncOperator.
-func (oi *exampleAsyncOperator) Close() {
-	oi.Source.(*AsyncDataChannel[asyncChunk]).channel.ReleaseAndWait()
-}
-
-// Open implements AsyncOperator.
-func (oi *exampleAsyncOperator) Open() error {
-	oi.Source.(*AsyncDataChannel[asyncChunk]).channel.SetCreateWorker(
-		func() workerpool.Worker[asyncChunk] {
-			return &asyncWorker{oi.Sink}
-		},
-	)
-	oi.Source.(*AsyncDataChannel[asyncChunk]).channel.Start()
-	return nil
-}
-
-// Display implements AsyncOperator.
-func (oi *exampleAsyncOperator) Display() string {
-	return "ExampleAsyncOperator{ source: " + oi.Source.Display() + ", sink: " + oi.Sink.Display() + "}"
-}
-
-func newExampleAsyncOperator(name string,
+func newExampleOperator(
+	name string,
 	component poolutil.Component,
 	concurrency int,
-	sink DataSink[asyncChunk]) *exampleAsyncOperator {
-	pool, _ := workerpool.NewWorkerPoolWithoutCreateWorker[asyncChunk](name, component, concurrency)
-	source := &AsyncDataChannel[asyncChunk]{channel: pool}
-	op := &exampleAsyncOperator{}
-	op.Source = source
-	op.Sink = sink
-	return op
+) *AsyncOperator[asyncChunk, asyncChunk] {
+	pool, _ := workerpool.NewWorkerPool(name, component, concurrency, newAsyncWorker)
+	return &AsyncOperator[asyncChunk, asyncChunk]{channel: pool}
 }
 
 type asyncWorker struct {
-	sink DataSink[asyncChunk]
+}
+
+func newAsyncWorker() workerpool.Worker[asyncChunk, asyncChunk] {
+	return &asyncWorker{}
 }
 
 // HandleTask define the basic running process for each operator.
-func (aw *asyncWorker) HandleTask(task asyncChunk) {
+func (aw *asyncWorker) HandleTask(task asyncChunk) asyncChunk {
 	task.res.res++
-	_ = aw.sink.Write(task)
+	return task
 }
 
 // Close implement the Close interface for workerpool.
@@ -84,6 +59,10 @@ func (*asyncWorker) Close() {}
 type simpleDataSink struct {
 	Res int
 	mu  sync.Mutex
+}
+
+func newExampleSink(initVal int) *simpleDataSink {
+	return &simpleDataSink{initVal, sync.Mutex{}}
 }
 
 // Write data to sink.
@@ -95,14 +74,19 @@ func (s *simpleDataSink) Write(data asyncChunk) error {
 	return nil
 }
 
-// Read data from source.
-func (*simpleDataSink) Next() (any, error) {
-	return nil, nil
-}
-
 // Display show the DataSink.
 func (*simpleDataSink) Display() string {
-	return "simpleDataSink"
+	return "simpleDataSink[asyncChunk]"
+}
+
+// Open the sink.
+func (*simpleDataSink) Open() error {
+	return nil
+}
+
+// Close the sink.
+func (*simpleDataSink) Close() error {
+	return nil
 }
 
 type simpleDataSource struct {
@@ -110,87 +94,33 @@ type simpleDataSource struct {
 	mu  sync.Mutex
 }
 
-// Start the source.
-func (*simpleDataSource) Start() error {
-	logutil.BgLogger().Info("simpleDataSource start")
+// Open the source.
+func (*simpleDataSource) Open() error {
+	logutil.BgLogger().Info("simpleDataSource open")
 	return nil
 }
 
-// Next read data.
-func (s *simpleDataSource) Next() (asyncChunk, error) {
+// Close the source.
+func (s *simpleDataSource) Close() error {
+	return nil
+}
+
+// Read reads data.
+func (s *simpleDataSource) Read() (asyncChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cnt < 10 {
-		s.cnt++
+	if s.cnt > 0 {
+		s.cnt--
 		return asyncChunk{&demoChunk{0}}, nil
 	}
-	return asyncChunk{}, errors.New("eof")
+	return asyncChunk{}, io.EOF
+}
+
+func newExampleSource(cnt int) *simpleDataSource {
+	return &simpleDataSource{cnt: cnt, mu: sync.Mutex{}}
 }
 
 // Display show the DataSource.
 func (*simpleDataSource) Display() string {
-	return "simpleDataSource"
+	return "simpleDataSource[asyncChunk]"
 }
-
-type exampleSourceOperator struct {
-	BaseOperator[asyncChunk, asyncChunk]
-	pool *workerpool.WorkerPool[bool]
-}
-
-// Close implements AsyncOperator.
-func (oi *exampleSourceOperator) Close() {
-	oi.pool.ReleaseAndWait()
-}
-
-// Open implements AsyncOperator.
-func (oi *exampleSourceOperator) Open() error {
-	oi.Source.Start()
-	oi.pool.SetCreateWorker(
-		func() workerpool.Worker[bool] {
-			return &asyncWorker1{oi.Source, oi.Sink}
-		},
-	)
-	oi.pool.Start()
-	for i := 0; i < 10; i++ {
-		oi.pool.AddTask(true)
-	}
-	return nil
-}
-
-// Display implements AsyncOperator.
-func (oi *exampleSourceOperator) Display() string {
-	return "ExampleSourceOperator{ source: " + oi.Source.Display() + ", sink: " + oi.Sink.Display() + "}"
-}
-
-func newExampleSourceOperator(name string,
-	component poolutil.Component,
-	concurrency int,
-	sink DataSink[asyncChunk]) *exampleSourceOperator {
-	pool, _ := workerpool.NewWorkerPoolWithoutCreateWorker[bool](name, component, concurrency)
-	source := &simpleDataSource{}
-	op := &exampleSourceOperator{}
-	op.Source = source
-	op.Sink = sink
-	op.pool = pool
-	return op
-}
-
-type asyncWorker1 struct {
-	source DataSource[asyncChunk]
-	sink   DataSink[asyncChunk]
-}
-
-// HandleTask define the basic running process for each operator.
-func (aw *asyncWorker1) HandleTask(task bool) {
-	for {
-		asyncChunk, err := aw.source.Next()
-		if err != nil {
-			return
-		}
-		asyncChunk.res.res++
-		_ = aw.sink.Write(asyncChunk)
-	}
-}
-
-// Close implement the Close interface for workerpool.
-func (*asyncWorker1) Close() {}
