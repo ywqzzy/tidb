@@ -16,6 +16,8 @@ package scheduler
 
 import (
 	"context"
+	"github.com/pingcap/failpoint"
+	"github.com/pingcap/tidb/domain/infosync"
 	"sync"
 	"time"
 
@@ -130,6 +132,8 @@ func (m *Manager) Start() {
 		m.fetchAndFastCancelTasks(m.ctx)
 	}()
 }
+
+var MockManagerDown func()
 
 // Stop stops the Manager.
 func (m *Manager) Stop() {
@@ -252,6 +256,8 @@ func (m *Manager) filterAlreadyHandlingTasks(tasks []*proto.Task) []*proto.Task 
 	return tasks[:i]
 }
 
+var TestSyncSubtaskRun = make(chan struct{})
+
 // onRunnableTask handles a runnable task.
 func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType string) {
 	logutil.Logger(m.logCtx).Info("onRunnableTask", zap.Any("task_id", taskID), zap.Any("type", taskType))
@@ -267,6 +273,15 @@ func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType str
 			return
 		case <-time.After(checkTime):
 		}
+		failpoint.Inject("mockStopManager", func() {
+			if m.id == ":4000" {
+				go func() {
+					<-TestSyncSubtaskRun
+					m.Stop()
+					_ = infosync.MockGlobalServerInfoManagerEntry.Delete(0)
+				}()
+			}
+		})
 		task, err := m.taskTable.GetGlobalTaskByID(taskID)
 		if err != nil {
 			m.onError(err)

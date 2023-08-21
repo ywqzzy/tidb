@@ -346,3 +346,18 @@ func TestOwnerChange(t *testing.T) {
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockOwnerChange"))
 	distContext.Close()
 }
+
+func TestSchedulerDown(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var m sync.Map
+	RegisterTaskMeta(&m)
+
+	distContext := testkit.NewDistExecutionContext(t, 3)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockStopManager", ""))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockTiDBDown", "return(true)"))
+	DispatchTaskAndCheckSuccess("😊", t, &m)
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockTiDBDown"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockStopManager"))
+	distContext.Close()
+}
