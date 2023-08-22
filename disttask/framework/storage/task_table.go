@@ -484,15 +484,15 @@ func (stm *TaskManager) UpdateFailedSchedulerIDs(taskID int64, replaceNodes map[
 	}
 
 	sql := new(strings.Builder)
-	if err := sqlexec.FormatSQL(sql, "update mysql.tidb_background_subtask set exec_id = (case"); err != nil {
+	if err := sqlexec.FormatSQL(sql, "update mysql.tidb_background_subtask set state = %? ,exec_id = (case ", proto.TaskStatePending); err != nil {
 		return err
 	}
 	for k, v := range replaceNodes {
-		if err := sqlexec.FormatSQL(sql, "when exec_id = %? then %?", k, v); err != nil {
+		if err := sqlexec.FormatSQL(sql, "when exec_id = %? then %? ", k, v); err != nil {
 			return err
 		}
 	}
-	if err := sqlexec.FormatSQL(sql, "end) where task_key = %? and exec_id in (", taskID); err != nil {
+	if err := sqlexec.FormatSQL(sql, " end) where task_key = %? and exec_id in (", taskID); err != nil {
 		return err
 	}
 	i := 0

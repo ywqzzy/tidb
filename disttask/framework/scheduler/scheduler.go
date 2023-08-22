@@ -79,11 +79,12 @@ func (s *InternalSchedulerImpl) startCancelCheck(ctx context.Context, wg *sync.W
 				return
 			case <-ticker.C:
 				canceled, err := s.taskTable.IsSchedulerCanceled(s.taskID, s.id)
+				logutil.Logger(s.logCtx).Info("scheduler before canceled")
 				if err != nil {
 					continue
 				}
 				if canceled {
-					logutil.Logger(s.logCtx).Debug("scheduler canceled")
+					logutil.Logger(s.logCtx).Info("scheduler canceled")
 					if cancelFn != nil {
 						cancelFn()
 					}
@@ -126,12 +127,14 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		return s.getError()
 	}
 	var wg sync.WaitGroup
-	s.startCancelCheck(runCtx, &wg, runCancel)
+	cancelCtx, checkCancel := context.WithCancel(ctx)
+	s.startCancelCheck(cancelCtx, &wg, checkCancel)
 	defer func() {
 		err := scheduler.CleanupSubtaskExecEnv(runCtx)
 		if err != nil {
 			logutil.Logger(s.logCtx).Error("cleanup subtask exec env failed", zap.Error(err))
 		}
+		checkCancel()
 		wg.Wait()
 	}()
 
@@ -162,6 +165,15 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		if err := s.getError(); err != nil {
 			break
 		}
+		failpoint.Inject("mockCleanScheduler", func() {
+			v, ok := testContexts.Load(s.id)
+			if ok {
+				if v.(*TestContext).mockDown.Load() {
+					failpoint.Break()
+				}
+			}
+		})
+
 		s.runSubtask(runCtx, scheduler, subtask, minimalTaskCh)
 	}
 	return s.getError()
@@ -187,6 +199,19 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 		zap.Int("cnt", len(minimalTasks)),
 		zap.Int64("subtask_id", subtask.ID),
 		zap.Int64("subtask_step", subtask.Step))
+
+	failpoint.Inject("mockTiDBDown", func(val failpoint.Value) {
+		if s.id == val.(string) || s.id == ":4001" || s.id == ":4002" {
+			logutil.BgLogger().Info("ywq test tidbDown")
+			v, ok := testContexts.Load(s.id)
+			if ok {
+				v.(*TestContext).TestSyncSubtaskRun <- struct{}{}
+				v.(*TestContext).mockDown.Store(true)
+				time.Sleep(2 * time.Second)
+				failpoint.Return()
+			}
+		}
+	})
 
 	var minimalTaskWg sync.WaitGroup
 	for _, minimalTask := range minimalTasks {
@@ -252,13 +277,6 @@ func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, m
 		return
 	}
 
-	failpoint.Inject("MockTiDBDown", func(val failpoint.Value) {
-		if val.(bool) && s.id == ":4000" {
-			TestSyncSubtaskRun <- struct{}{}
-			time.Sleep(2 * time.Second)
-		}
-	})
-
 	failpoint.Inject("MockExecutorRunErr", func(val failpoint.Value) {
 		if val.(bool) {
 			s.onError(errors.New("MockExecutorRunErr"))
@@ -280,6 +298,7 @@ func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, m
 	if err = executor.Run(minimalTaskCtx); err != nil {
 		s.onError(err)
 	}
+	logutil.Logger(s.logCtx).Info("minimal task done")
 }
 
 // Rollback rollbacks the scheduler task.

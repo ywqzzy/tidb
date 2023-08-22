@@ -17,6 +17,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/util/intest"
 	"math/rand"
 	"time"
 
@@ -219,7 +220,7 @@ func (d *dispatcher) handleRunning() error {
 		logutil.Logger(d.logCtx).Info("previous stage finished, generate dist plan", zap.Int64("stage", d.task.Step))
 		return d.processNormalFlow()
 	}
-	// Check if any node are down
+	// Check if any node are down.
 	handle := GetTaskFlowHandle(d.task.Type)
 	if len(d.taskNodes) == 0 {
 		schedulerIDs, err := d.taskMgr.GetSchedulerIDsByTaskID(d.task.ID)
@@ -254,24 +255,28 @@ func (d *dispatcher) handleRunning() error {
 		}
 		d.liveNodes = newInfos
 	}
-	replaceNodes := make(map[string]string)
-	for _, nodeID := range d.taskNodes {
-		if ok := disttaskutil.MatchServerInfo(d.liveNodes, nodeID); !ok {
-			n := d.liveNodes[rand.Int()%len(d.liveNodes)]
-			replaceNodes[nodeID] = disttaskutil.GenerateExecID(n.IP, n.Port)
-		}
-	}
-	if err := d.taskMgr.UpdateFailedSchedulerIDs(d.task.ID, replaceNodes); err != nil {
-		return err
-	}
-	// replace local cache
-	for k, v := range replaceNodes {
-		for m, n := range d.taskNodes {
-			if n == k {
-				d.taskNodes[m] = v
-				break
+	if len(d.liveNodes) > 0 {
+		replaceNodes := make(map[string]string)
+		for _, nodeID := range d.taskNodes {
+			if ok := disttaskutil.MatchServerInfo(d.liveNodes, nodeID); !ok {
+				n := d.liveNodes[rand.Int()%len(d.liveNodes)]
+				replaceNodes[nodeID] = disttaskutil.GenerateExecID(n.IP, n.Port)
 			}
 		}
+		logutil.BgLogger().Info("ywq test replace", zap.Any("replace", replaceNodes))
+		if err := d.taskMgr.UpdateFailedSchedulerIDs(d.task.ID, replaceNodes); err != nil {
+			return err
+		}
+		// replace local cache
+		for k, v := range replaceNodes {
+			for m, n := range d.taskNodes {
+				if n == k {
+					d.taskNodes[m] = v
+					break
+				}
+			}
+		}
+
 	}
 	// Wait all subtasks in this stage finished.
 	handle.OnTicker(d.ctx, d.task)
@@ -415,8 +420,13 @@ func (d *dispatcher) dispatchSubTask(task *proto.Task, handle TaskFlowHandle, me
 }
 
 // GenerateSchedulerNodes generate a eligible TiDB nodes.
-func GenerateSchedulerNodes(ctx context.Context) ([]*infosync.ServerInfo, error) {
-	serverInfos, err := infosync.GetAllServerInfo(ctx)
+func GenerateSchedulerNodes(ctx context.Context) (serverNodes []*infosync.ServerInfo, err error) {
+	var serverInfos map[string]*infosync.ServerInfo
+	if intest.InTest {
+		serverInfos = infosync.MockGlobalServerInfoManagerEntry.GetAllServerInfo()
+	} else {
+		serverInfos, err = infosync.GetAllServerInfo(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +434,7 @@ func GenerateSchedulerNodes(ctx context.Context) ([]*infosync.ServerInfo, error)
 		return nil, errors.New("not found instance")
 	}
 
-	serverNodes := make([]*infosync.ServerInfo, 0, len(serverInfos))
+	serverNodes = make([]*infosync.ServerInfo, 0, len(serverInfos))
 	for _, serverInfo := range serverInfos {
 		serverNodes = append(serverNodes, serverInfo)
 	}

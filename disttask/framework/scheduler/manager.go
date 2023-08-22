@@ -19,12 +19,14 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/domain/infosync"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/resourcemanager/pool/spool"
 	"github.com/pingcap/tidb/resourcemanager/util"
+
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
@@ -133,8 +135,6 @@ func (m *Manager) Start() {
 	}()
 }
 
-var MockManagerDown func()
-
 // Stop stops the Manager.
 func (m *Manager) Stop() {
 	m.cancel()
@@ -207,6 +207,7 @@ func (m *Manager) onRunnableTasks(ctx context.Context, tasks []*proto.Task) {
 		err = m.schedulerPool.Run(func() {
 			m.onRunnableTask(ctx, t.ID, t.Type)
 			m.removeHandlingTask(task.ID)
+			logutil.Logger(m.logCtx).Info("ywq test handle a batch of subtask.")
 		})
 		// pool closed.
 		if err != nil {
@@ -256,7 +257,12 @@ func (m *Manager) filterAlreadyHandlingTasks(tasks []*proto.Task) []*proto.Task 
 	return tasks[:i]
 }
 
-var TestSyncSubtaskRun = make(chan struct{})
+type TestContext struct {
+	TestSyncSubtaskRun chan struct{}
+	mockDown           atomic.Bool
+}
+
+var testContexts sync.Map
 
 // onRunnableTask handles a runnable task.
 func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType string) {
@@ -274,13 +280,25 @@ func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType str
 		case <-time.After(checkTime):
 		}
 		failpoint.Inject("mockStopManager", func() {
-			if m.id == ":4000" {
-				go func() {
-					<-TestSyncSubtaskRun
+			testContexts.Store(m.id, &TestContext{make(chan struct{}), atomic.Bool{}})
+			logutil.Logger(m.logCtx).Info("ywq test mockStopManager")
+			go func() {
+				v, ok := testContexts.Load(m.id)
+				logutil.Logger(m.logCtx).Info("ywq test ok", zap.Bool("ok", ok))
+
+				if ok {
+					<-v.(*TestContext).TestSyncSubtaskRun
 					m.Stop()
-					_ = infosync.MockGlobalServerInfoManagerEntry.Delete(0)
-				}()
-			}
+					logutil.Logger(m.logCtx).Info("ywq test stop")
+					if m.id == ":4000" {
+						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
+					} else if m.id == ":4001" {
+						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
+					} else if m.id == ":4002" {
+						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
+					}
+				}
+			}()
 		})
 		task, err := m.taskTable.GetGlobalTaskByID(taskID)
 		if err != nil {

@@ -347,17 +347,33 @@ func TestOwnerChange(t *testing.T) {
 	distContext.Close()
 }
 
-func TestSchedulerDown(t *testing.T) {
+func TestSchedulerDownBasic(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
 	var m sync.Map
 	RegisterTaskMeta(&m)
 
 	distContext := testkit.NewDistExecutionContext(t, 3)
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockStopManager", ""))
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockTiDBDown", "return(true)"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "3*return(\":4000\")"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(\":4000\")"))
 	DispatchTaskAndCheckSuccess("😊", t, &m)
-	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/MockTiDBDown"))
-	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/dispatcher/mockStopManager"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager"))
+
+	distContext.Close()
+}
+
+func TestSchedulerDownManyNodes(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var m sync.Map
+	RegisterTaskMeta(&m)
+
+	distContext := testkit.NewDistExecutionContext(t, 30)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "30*return(\":4000\")"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(\":4000\")"))
+	DispatchTaskAndCheckSuccess("😊", t, &m)
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager"))
 	distContext.Close()
 }
