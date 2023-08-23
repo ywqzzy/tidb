@@ -170,9 +170,6 @@ type Domain struct {
 	runawaySyncer            *runawaySyncer
 	resourceGroupsController *rmclient.ResourceGroupsController
 
-	// dist task framework
-	schedulerManager *scheduler.Manager
-
 	serverID             uint64
 	serverIDSession      *concurrency.Session
 	isLostConnectionToPD atomicutil.Int32 // !0: true, 0: false.
@@ -1506,10 +1503,6 @@ func (do *Domain) distTaskFrameworkLoop(ctx context.Context, taskManager *storag
 			}
 		}
 	}
-}
-
-func (do *Domain) stopSchedulerManager(ctx context.Context) {
-	do.schedulerManager.Stop()
 }
 
 type sessionPool struct {

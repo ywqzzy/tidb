@@ -207,7 +207,6 @@ func (m *Manager) onRunnableTasks(ctx context.Context, tasks []*proto.Task) {
 		err = m.schedulerPool.Run(func() {
 			m.onRunnableTask(ctx, t.ID, t.Type)
 			m.removeHandlingTask(task.ID)
-			logutil.Logger(m.logCtx).Info("ywq test handle a batch of subtask.")
 		})
 		// pool closed.
 		if err != nil {
@@ -281,15 +280,11 @@ func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType str
 		}
 		failpoint.Inject("mockStopManager", func() {
 			testContexts.Store(m.id, &TestContext{make(chan struct{}), atomic.Bool{}})
-			logutil.Logger(m.logCtx).Info("ywq test mockStopManager")
 			go func() {
 				v, ok := testContexts.Load(m.id)
-				logutil.Logger(m.logCtx).Info("ywq test ok", zap.Bool("ok", ok))
-
 				if ok {
 					<-v.(*TestContext).TestSyncSubtaskRun
 					m.Stop()
-					logutil.Logger(m.logCtx).Info("ywq test stop")
 					_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
 				}
 			}()

@@ -205,7 +205,6 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 
 	failpoint.Inject("mockTiDBDown", func(val failpoint.Value) {
 		if s.id == val.(string) || s.id == ":4001" || s.id == ":4002" {
-			logutil.BgLogger().Info("ywq test tidbDown")
 			v, ok := testContexts.Load(s.id)
 			if ok {
 				v.(*TestContext).TestSyncSubtaskRun <- struct{}{}
@@ -217,7 +216,6 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 	})
 	failpoint.Inject("mockTiDBDown2", func() {
 		if s.id == ":4003" && subtask.Step == proto.StepTwo {
-			logutil.BgLogger().Info("ywq test tidbDown step2")
 			v, ok := testContexts.Load(s.id)
 			if ok {
 				v.(*TestContext).TestSyncSubtaskRun <- struct{}{}
@@ -230,7 +228,6 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 
 	failpoint.Inject("mockTiDBPartitionThenResume", func(val failpoint.Value) {
 		if val.(bool) == true && (s.id == ":4000" || s.id == ":4001" || s.id == ":4002") {
-			logutil.Logger(s.logCtx).Info("ywq test tidb partition then resume")
 			_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(s.id)
 			time.Sleep(20 * time.Second)
 		}
@@ -276,7 +273,6 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 	if err := s.taskTable.FinishSubtask(subtask.ID, subtaskMeta); err != nil {
 		s.onError(err)
 	}
-	logutil.Logger(s.logCtx).Info("ywq test finish subtask", zap.Any("subtask id", subtask.ID))
 	failpoint.Inject("syncAfterSubtaskFinish", func() {
 		TestSyncChan <- struct{}{}
 		<-TestSyncChan

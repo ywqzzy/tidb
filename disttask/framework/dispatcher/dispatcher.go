@@ -276,7 +276,6 @@ func (d *dispatcher) replaceDeadNodesIfAny(handle TaskFlowHandle) error {
 				replaceNodes[nodeID] = disttaskutil.GenerateExecID(n.IP, n.Port)
 			}
 		}
-		logutil.BgLogger().Info("ywq test replace", zap.Any("replace", replaceNodes))
 		if err := d.taskMgr.UpdateFailedSchedulerIDs(d.task.ID, replaceNodes); err != nil {
 			return err
 		}
