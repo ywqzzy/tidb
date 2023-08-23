@@ -17,7 +17,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"github.com/pingcap/tidb/domain/infosync"
 	"sync"
 	"time"
 
@@ -25,11 +24,13 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/disttask/framework/proto"
 	"github.com/pingcap/tidb/disttask/framework/storage"
+	"github.com/pingcap/tidb/domain/infosync"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
 
 const (
+	// DefaultCheckSubtaskCanceledInterval is the default check interval for cancel cancelled subtasks.
 	DefaultCheckSubtaskCanceledInterval = 2 * time.Second
 )
 
@@ -227,7 +228,7 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 	})
 
 	failpoint.Inject("mockTiDBPartitionThenResume", func(val failpoint.Value) {
-		if val.(bool) == true && (s.id == ":4000" || s.id == ":4001" || s.id == ":4002") {
+		if val.(bool) && (s.id == ":4000" || s.id == ":4001" || s.id == ":4002") {
 			_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(s.id)
 			time.Sleep(20 * time.Second)
 		}

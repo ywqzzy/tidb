@@ -16,17 +16,16 @@ package scheduler
 
 import (
 	"context"
-	"github.com/pingcap/failpoint"
-	"github.com/pingcap/tidb/domain/infosync"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/disttask/framework/proto"
+	"github.com/pingcap/tidb/domain/infosync"
 	"github.com/pingcap/tidb/resourcemanager/pool/spool"
 	"github.com/pingcap/tidb/resourcemanager/util"
-
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
@@ -256,6 +255,7 @@ func (m *Manager) filterAlreadyHandlingTasks(tasks []*proto.Task) []*proto.Task 
 	return tasks[:i]
 }
 
+// TestContext only used in tests.
 type TestContext struct {
 	TestSyncSubtaskRun chan struct{}
 	mockDown           atomic.Bool
