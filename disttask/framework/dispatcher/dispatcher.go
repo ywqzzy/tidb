@@ -71,10 +71,13 @@ type dispatcher struct {
 	serverID string
 
 	// for HA
-	liveNodes    []*infosync.ServerInfo
-	liveNodeCnt  int
-	liveNodeIntv int
-	taskNodes    []string
+	// liveNodes will fetch and store all live nodes every liveNodeInterval ticks.
+	liveNodes             []*infosync.ServerInfo
+	liveNodeFetchInterval int
+	// liveNodeFetchTick is the tick variable.
+	liveNodeFetchTick int
+	// taskNodes stores the id of current scheduler nodes.
+	taskNodes []string
 }
 
 // MockOwnerChange mock owner change in tests.
@@ -215,8 +218,6 @@ func (d *dispatcher) handleRunning() error {
 		return err
 	}
 
-	d.taskMgr.PrintSubtaskInfo(int(d.task.ID))
-
 	prevStageFinished := cnt == 0
 	if prevStageFinished {
 		logutil.Logger(d.logCtx).Info("previous stage finished, generate dist plan", zap.Int64("stage", d.task.Step))
@@ -224,6 +225,16 @@ func (d *dispatcher) handleRunning() error {
 	}
 	// Check if any node are down.
 	handle := GetTaskFlowHandle(d.task.Type)
+	if err := d.replaceDeadNodesIfAny(handle); err != nil {
+		return err
+	}
+	// Wait all subtasks in this stage finished.
+	handle.OnTicker(d.ctx, d.task)
+	logutil.Logger(d.logCtx).Debug("handing running state, this task keeps current state", zap.String("state", d.task.State))
+	return nil
+}
+
+func (d *dispatcher) replaceDeadNodesIfAny(handle TaskFlowHandle) error {
 	if len(d.taskNodes) == 0 {
 		schedulerIDs, err := d.taskMgr.GetSchedulerIDsByTaskID(d.task.ID)
 		if err != nil {
@@ -231,9 +242,9 @@ func (d *dispatcher) handleRunning() error {
 		}
 		d.taskNodes = schedulerIDs
 	}
-	d.liveNodeCnt++
-	if d.liveNodeCnt == d.liveNodeIntv {
-		d.liveNodeCnt = 0
+	d.liveNodeFetchTick++
+	if d.liveNodeFetchTick == d.liveNodeFetchInterval {
+		d.liveNodeFetchTick = 0
 		serverInfos, err := GenerateSchedulerNodes(d.ctx)
 		if err != nil {
 			return err
@@ -269,7 +280,7 @@ func (d *dispatcher) handleRunning() error {
 		if err := d.taskMgr.UpdateFailedSchedulerIDs(d.task.ID, replaceNodes); err != nil {
 			return err
 		}
-		// replace local cache
+		// replace local cache.
 		for k, v := range replaceNodes {
 			for m, n := range d.taskNodes {
 				if n == k {
@@ -280,9 +291,6 @@ func (d *dispatcher) handleRunning() error {
 		}
 
 	}
-	// Wait all subtasks in this stage finished.
-	handle.OnTicker(d.ctx, d.task)
-	logutil.Logger(d.logCtx).Debug("handing running state, this task keeps current state", zap.String("state", d.task.State))
 	return nil
 }
 
