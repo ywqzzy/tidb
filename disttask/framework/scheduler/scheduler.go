@@ -55,7 +55,7 @@ type InternalSchedulerImpl struct {
 }
 
 // NewInternalScheduler creates a new InternalScheduler.
-func NewInternalScheduler(ctx context.Context, id string, taskID int64, taskTable TaskTable, pool Pool) InternalScheduler {
+func NewInternalScheduler(_ context.Context, id string, taskID int64, taskTable TaskTable, pool Pool) InternalScheduler {
 	logPrefix := fmt.Sprintf("id: %s, task_id: %d", id, taskID)
 	schedulerImpl := &InternalSchedulerImpl{
 		id:        id,
