@@ -108,10 +108,6 @@ func TestHABasic(t *testing.T) {
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager"))
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockCleanScheduler"))
 	distContext.Close()
-
-	// todo
-	// 1. owner change
-	// 2. partition but come back
 }
 
 func TestHAManyNodes(t *testing.T) {

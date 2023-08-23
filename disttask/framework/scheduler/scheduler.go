@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	DefaultCheckSubtaskCanceledInterval = 10 * time.Second
+	DefaultCheckSubtaskCanceledInterval = 2 * time.Second
 )
 
 // TestSyncChan is used to sync the test.
@@ -284,7 +284,6 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 }
 
 func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, minimalTask proto.MinimalTask, tp string, step int64) {
-	logutil.Logger(s.logCtx).Info("scheduler run a minimalTask", zap.Any("step", step), zap.Stringer("minimal_task", minimalTask))
 	select {
 	case <-minimalTaskCtx.Done():
 		s.onError(minimalTaskCtx.Err())
@@ -294,7 +293,7 @@ func (s *InternalSchedulerImpl) runMinimalTask(minimalTaskCtx context.Context, m
 	if s.getError() != nil {
 		return
 	}
-
+	logutil.Logger(s.logCtx).Info("scheduler run a minimalTask", zap.Any("step", step), zap.Stringer("minimal_task", minimalTask))
 	executor, err := createSubtaskExecutor(minimalTask, tp, step)
 	if err != nil {
 		s.onError(err)
