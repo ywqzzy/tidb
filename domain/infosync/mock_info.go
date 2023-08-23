@@ -56,6 +56,7 @@ func (m *MockGlobalServerInfoManager) Delete(idx int) error {
 	return nil
 }
 
+// DeleteByID delete ServerInfo by host:port.
 func (m *MockGlobalServerInfoManager) DeleteByID(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
