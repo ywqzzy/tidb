@@ -17,6 +17,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/domain/infosync"
 	"sync"
 	"time"
 
@@ -126,9 +127,11 @@ func (s *InternalSchedulerImpl) run(ctx context.Context, task *proto.Task) error
 		s.onError(err)
 		return s.getError()
 	}
+
 	var wg sync.WaitGroup
 	cancelCtx, checkCancel := context.WithCancel(ctx)
-	s.startCancelCheck(cancelCtx, &wg, checkCancel)
+	s.startCancelCheck(cancelCtx, &wg, runCancel)
+
 	defer func() {
 		err := scheduler.CleanupSubtaskExecEnv(runCtx)
 		if err != nil {
@@ -212,6 +215,26 @@ func (s *InternalSchedulerImpl) runSubtask(ctx context.Context, scheduler Schedu
 			}
 		}
 	})
+	failpoint.Inject("mockTiDBDown2", func() {
+		if s.id == ":4003" && subtask.Step == proto.StepTwo {
+			logutil.BgLogger().Info("ywq test tidbDown step2")
+			v, ok := testContexts.Load(s.id)
+			if ok {
+				v.(*TestContext).TestSyncSubtaskRun <- struct{}{}
+				v.(*TestContext).mockDown.Store(true)
+				time.Sleep(2 * time.Second)
+				return
+			}
+		}
+	})
+
+	failpoint.Inject("mockTiDBPartitionThenResume", func(val failpoint.Value) {
+		if val.(bool) == true && (s.id == ":4000" || s.id == ":4001" || s.id == ":4002") {
+			logutil.Logger(s.logCtx).Info("ywq test tidb partition then resume")
+			_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(s.id)
+			time.Sleep(20 * time.Second)
+		}
+	})
 
 	var minimalTaskWg sync.WaitGroup
 	for _, minimalTask := range minimalTasks {
@@ -253,6 +276,7 @@ func (s *InternalSchedulerImpl) onSubtaskFinished(ctx context.Context, scheduler
 	if err := s.taskTable.FinishSubtask(subtask.ID, subtaskMeta); err != nil {
 		s.onError(err)
 	}
+	logutil.Logger(s.logCtx).Info("ywq test finish subtask", zap.Any("subtask id", subtask.ID))
 	failpoint.Inject("syncAfterSubtaskFinish", func() {
 		TestSyncChan <- struct{}{}
 		<-TestSyncChan

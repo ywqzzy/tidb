@@ -492,7 +492,7 @@ func (stm *TaskManager) UpdateFailedSchedulerIDs(taskID int64, replaceNodes map[
 			return err
 		}
 	}
-	if err := sqlexec.FormatSQL(sql, " end) where task_key = %? and exec_id in (", taskID); err != nil {
+	if err := sqlexec.FormatSQL(sql, " end) where task_key = %? and state != \"succeed\" and exec_id in (", taskID); err != nil {
 		return err
 	}
 	i := 0

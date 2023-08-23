@@ -290,13 +290,7 @@ func (m *Manager) onRunnableTask(ctx context.Context, taskID int64, taskType str
 					<-v.(*TestContext).TestSyncSubtaskRun
 					m.Stop()
 					logutil.Logger(m.logCtx).Info("ywq test stop")
-					if m.id == ":4000" {
-						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
-					} else if m.id == ":4001" {
-						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
-					} else if m.id == ":4002" {
-						_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
-					}
+					_ = infosync.MockGlobalServerInfoManagerEntry.DeleteByID(m.id)
 				}
 			}()
 		})

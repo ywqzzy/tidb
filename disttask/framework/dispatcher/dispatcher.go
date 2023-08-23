@@ -215,6 +215,8 @@ func (d *dispatcher) handleRunning() error {
 		return err
 	}
 
+	d.taskMgr.PrintSubtaskInfo(int(d.task.ID))
+
 	prevStageFinished := cnt == 0
 	if prevStageFinished {
 		logutil.Logger(d.logCtx).Info("previous stage finished, generate dist plan", zap.Int64("stage", d.task.Step))

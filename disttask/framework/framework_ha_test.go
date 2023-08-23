@@ -54,6 +54,10 @@ func (*haTestFlowHandle) ProcessNormalFlow(_ context.Context, _ dispatcher.TaskH
 		gTask.Step = proto.StepTwo
 		return [][]byte{
 			[]byte("task11"),
+			[]byte("task12"),
+			[]byte("task13"),
+			[]byte("task14"),
+			[]byte("task15"),
 		}, nil
 	}
 	return nil, nil
@@ -106,8 +110,8 @@ func TestHABasic(t *testing.T) {
 	distContext.Close()
 
 	// todo
-	// 3. subtask fail before update subtasks states.
-	// 4. dispatcher read serverInfo fail
+	// 1. owner change
+	// 2. partition but come back
 }
 
 func TestHAManyNodes(t *testing.T) {
@@ -127,17 +131,59 @@ func TestHAManyNodes(t *testing.T) {
 	distContext.Close()
 }
 
-func TestSchedulerDownAndOwnerChange(t *testing.T) {
+func TestHAFailInDifferentStage(t *testing.T) {
 	defer dispatcher.ClearTaskFlowHandle()
 	defer scheduler.ClearSchedulers()
 	var m sync.Map
-	RegisterTaskMeta(&m)
-	// todo change the test.
-	distContext := testkit.NewDistExecutionContext(t, 3)
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "3*return(true)"))
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(true)"))
+
+	RegisterHATaskMeta(&m)
+	distContext := testkit.NewDistExecutionContext(t, 6)
+	// stage1 : server num from 6 to 3.
+	// stage2 : server num from 3 to 2.
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockCleanScheduler", "return()"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "6*return()"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(\":4000\")"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown2", "return()"))
+
 	DispatchTaskAndCheckSuccess("😊", t, &m)
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown2"))
 	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockCleanScheduler"))
+	distContext.Close()
+}
+
+func TestHAFailInDifferentStageManyNodes(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var m sync.Map
+
+	RegisterHATaskMeta(&m)
+	distContext := testkit.NewDistExecutionContext(t, 30)
+	// stage1 : server num from 30 to 27.
+	// stage2 : server num from 27 to 26.
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockCleanScheduler", "return()"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "30*return()"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(\":4000\")"))
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown2", "return()"))
+
+	DispatchTaskAndCheckSuccess("😊", t, &m)
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown2"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager"))
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockCleanScheduler"))
+	distContext.Close()
+}
+
+func TestHAReplacedButRunning(t *testing.T) {
+	defer dispatcher.ClearTaskFlowHandle()
+	defer scheduler.ClearSchedulers()
+	var m sync.Map
+
+	RegisterHATaskMeta(&m)
+	distContext := testkit.NewDistExecutionContext(t, 4)
+	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBPartitionThenResume", "10*return(true)"))
+	DispatchTaskAndCheckSuccess("😊", t, &m)
+	require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBPartitionThenResume"))
 	distContext.Close()
 }

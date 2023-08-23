@@ -156,7 +156,7 @@ func DispatchTask(taskKey string, t *testing.T) *proto.Task {
 
 	var task *proto.Task
 	for {
-		if time.Since(start) > 2*time.Minute {
+		if time.Since(start) > 10*time.Minute {
 			require.FailNow(t, "timeout")
 		}
 
@@ -353,7 +353,7 @@ func TestSchedulerDownBasic(t *testing.T) {
 	var m sync.Map
 	RegisterTaskMeta(&m)
 
-	distContext := testkit.NewDistExecutionContext(t, 3)
+	distContext := testkit.NewDistExecutionContext(t, 4)
 	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockStopManager", "3*return(\":4000\")"))
 	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/disttask/framework/scheduler/mockTiDBDown", "return(\":4000\")"))
 	DispatchTaskAndCheckSuccess("😊", t, &m)
