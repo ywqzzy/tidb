@@ -127,6 +127,7 @@ func (e *Engine) LoadIngestData(ctx context.Context, start, end []byte, iterOffs
 	} else {
 		it, err := e.createMergeIter(ctx, start)
 		if err != nil {
+			e.mu.Unlock()
 			return nil, errors.Trace(err)
 		}
 		e.iter[iterOffset] = it
