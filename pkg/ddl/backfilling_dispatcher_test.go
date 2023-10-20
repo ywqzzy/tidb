@@ -16,11 +16,13 @@ package ddl_test
 
 import (
 	"context"
+	dbsql "database/sql"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/br/pkg/lightning/backend/external"
 	"github.com/pingcap/tidb/pkg/ddl"
 	"github.com/pingcap/tidb/pkg/disttask/framework/proto"
 	"github.com/pingcap/tidb/pkg/domain"
@@ -28,7 +30,9 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/model"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/testkit"
+	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestBackfillingDispatcher(t *testing.T) {
@@ -50,7 +54,8 @@ func TestBackfillingDispatcher(t *testing.T) {
 	tblInfo := tbl.Meta()
 
 	// 1.1 OnNextSubtasksBatch
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	require.Equal(t, proto.StepOne, gTask.Step)
 	metas, err := dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
@@ -63,13 +68,15 @@ func TestBackfillingDispatcher(t *testing.T) {
 
 	// 1.2 test partition table OnNextSubtasksBatch after StepInit finished.
 	gTask.State = proto.TaskStateRunning
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	require.Equal(t, proto.StepThree, gTask.Step)
 	// for partition table, we will not generate subtask for StepThree.
 	metas, err = dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
 	require.Len(t, metas, 0)
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	require.Equal(t, proto.StepDone, gTask.Step)
 	metas, err = dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
@@ -99,19 +106,22 @@ func TestBackfillingDispatcher(t *testing.T) {
 	tk.MustExec("insert into t2 values (), (), (), (), (), ()")
 	gTask = createAddIndexGlobalTask(t, dom, "test", "t2", proto.Backfill)
 	// 2.2.1 stepInit
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	metas, err = dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(metas))
 	require.Equal(t, proto.StepOne, gTask.Step)
 	// 2.2.2 stepOne
 	gTask.State = proto.TaskStateRunning
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	require.Equal(t, proto.StepThree, gTask.Step)
 	metas, err = dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(metas))
-	gTask.Step = dsp.GetNextStep(nil, gTask)
+	gTask.Step, err = dsp.GetNextStep(nil, gTask)
+	require.NoError(t, err)
 	require.Equal(t, proto.StepDone, gTask.Step)
 	metas, err = dsp.OnNextSubtasksBatch(context.Background(), nil, gTask, gTask.Step)
 	require.NoError(t, err)
@@ -157,4 +167,85 @@ func createAddIndexGlobalTask(t *testing.T, dom *domain.Domain, dbName, tblName 
 	}
 
 	return gTask
+}
+
+func TestMergeStep(t *testing.T) {
+	db, err := dbsql.Open("mysql", "root:@tcp(10.2.12.57:32213)/")
+	require.NoError(t, err)
+	defer db.Close()
+
+	{
+		rows, err := db.Query("select meta from mysql.tidb_background_subtask_history where task_key = '60002' and state = 'succeed' and step = 1")
+		require.NoError(t, err)
+
+		metas := make([][]byte, 0, 5000)
+		for rows.Next() {
+			var meta []byte
+			err = rows.Scan(&meta)
+			require.NoError(t, err)
+			metas = append(metas, meta)
+		}
+		logutil.BgLogger().Info("ywq test rows", zap.Any("rows", len(metas)))
+
+		multiStats := make([]external.MultipleFilesStat, 0, 100)
+		for _, bs := range metas {
+			var subtask ddl.BackfillSubTaskMeta
+			err = json.Unmarshal(bs, &subtask)
+			require.NoError(t, err)
+
+			multiStats = append(multiStats, subtask.MultipleFilesStats...)
+		}
+		o := external.GetMaxOverlappingTotal(multiStats)
+		println(o)
+	}
+
+	{
+		rows, err := db.Query("select meta from mysql.tidb_background_subtask where task_key = '90001' and state = 'succeed' and step = 1")
+		require.NoError(t, err)
+
+		metas := make([][]byte, 0, 5000)
+		for rows.Next() {
+			var meta []byte
+			err = rows.Scan(&meta)
+			require.NoError(t, err)
+			metas = append(metas, meta)
+		}
+		logutil.BgLogger().Info("ywq test rows", zap.Any("rows", len(metas)))
+
+		multiStats := make([]external.MultipleFilesStat, 0, 100)
+		for _, bs := range metas {
+			var subtask ddl.BackfillSubTaskMeta
+			err = json.Unmarshal(bs, &subtask)
+			require.NoError(t, err)
+
+			multiStats = append(multiStats, subtask.MultipleFilesStats...)
+		}
+		o := external.GetMaxOverlappingTotal(multiStats)
+		println(o)
+	}
+
+	{
+		rows, err := db.Query("select meta from mysql.tidb_background_subtask where task_key = '90002' and state = 'succeed' and step = 1")
+		require.NoError(t, err)
+
+		metas := make([][]byte, 0, 5000)
+		for rows.Next() {
+			var meta []byte
+			err = rows.Scan(&meta)
+			require.NoError(t, err)
+			metas = append(metas, meta)
+		}
+		logutil.BgLogger().Info("ywq test rows", zap.Any("rows", len(metas)))
+
+		multiStats := make([]external.MultipleFilesStat, 0, 100)
+		for _, bs := range metas {
+			var subtask ddl.BackfillSubTaskMeta
+			err = json.Unmarshal(bs, &subtask)
+			require.NoError(t, err)
+
+			multiStats = append(multiStats, subtask.MultipleFilesStats...)
+		}
+		o := external.GetMaxOverlappingTotal(multiStats)
+		println(o)
+	}
 }

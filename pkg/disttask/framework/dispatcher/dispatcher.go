@@ -499,7 +499,16 @@ func (d *BaseDispatcher) onNextStage() (err error) {
 		failpoint.Return(errors.New("mockDynamicDispatchErr"))
 	})
 
-	nextStep := d.GetNextStep(d, d.Task)
+	nextStep, err := d.GetNextStep(d, d.Task)
+	if err != nil {
+		if d.IsRetryableErr(err) {
+			return err
+		}
+		d.Task.Error = err
+		// state transform: pending/running -> failed.
+		return d.updateTask(proto.TaskStateFailed, nil, RetrySQLTimes)
+	}
+
 	logutil.Logger(d.logCtx).Info("onNextStage",
 		zap.Int64("current-step", int64(d.Task.Step)),
 		zap.Int64("next-step", int64(nextStep)))

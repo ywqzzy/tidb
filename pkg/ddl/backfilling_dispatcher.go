@@ -130,14 +130,14 @@ func updateMeta(gTask *proto.Task, taskMeta *BackfillGlobalMeta) error {
 func (*backfillingDispatcherExt) GetNextStep(
 	taskHandle dispatcher.TaskHandle,
 	task *proto.Task,
-) proto.Step {
+) (proto.Step, error) {
 	switch task.Step {
 	case proto.StepInit:
-		return proto.StepOne
+		return proto.StepOne, nil
 	case proto.StepOne:
 		// when in tests
 		if taskHandle == nil {
-			return proto.StepThree
+			return proto.StepThree, nil
 		}
 
 		var meta BackfillGlobalMeta
@@ -146,37 +146,36 @@ func (*backfillingDispatcherExt) GetNextStep(
 				"unmarshal task meta met error",
 				zap.String("category", "ddl"),
 				zap.Error(err))
+			return proto.StepThree, errors.Trace(err)
 		}
 		// don't need merge step in local backend.
 		if len(meta.CloudStorageURI) == 0 {
-			return proto.StepThree
+			return proto.StepThree, nil
 		}
 
 		// if data files overlaps too much, we need a merge step.
 		subTaskMetas, err := taskHandle.GetPreviousSubtaskMetas(task.ID, proto.StepInit)
 		if err != nil {
-			// TODO(lance6716): should we return error?
-			return proto.StepThree
+			return proto.StepThree, errors.Trace(err)
 		}
 		multiStats := make([]external.MultipleFilesStat, 0, 100)
 		for _, bs := range subTaskMetas {
 			var subtask BackfillSubTaskMeta
 			err = json.Unmarshal(bs, &subtask)
 			if err != nil {
-				// TODO(lance6716): should we return error?
-				return proto.StepThree
+				return proto.StepThree, errors.Trace(err)
 			}
 			multiStats = append(multiStats, subtask.MultipleFilesStats...)
 		}
 		if skipMergeSort(multiStats) {
-			return proto.StepThree
+			return proto.StepThree, nil
 		}
-		return proto.StepTwo
+		return proto.StepTwo, nil
 	case proto.StepTwo:
-		return proto.StepThree
+		return proto.StepThree, nil
 	default:
 		// current step should be proto.StepThree
-		return proto.StepDone
+		return proto.StepDone, nil
 	}
 }
 
