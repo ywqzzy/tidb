@@ -65,12 +65,12 @@ func (*rollbackDispatcherExt) IsRetryableErr(error) bool {
 	return true
 }
 
-func (dsp *rollbackDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) proto.Step {
+func (dsp *rollbackDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) (proto.Step, error) {
 	switch task.Step {
 	case proto.StepInit:
-		return proto.StepOne
+		return proto.StepOne, nil
 	default:
-		return proto.StepDone
+		return proto.StepDone, nil
 	}
 }
 

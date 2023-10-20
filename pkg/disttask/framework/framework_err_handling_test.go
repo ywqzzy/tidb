@@ -78,14 +78,14 @@ func (*planErrDispatcherExt) IsRetryableErr(error) bool {
 	return true
 }
 
-func (p *planErrDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) proto.Step {
+func (p *planErrDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) (proto.Step, error) {
 	switch task.Step {
 	case proto.StepInit:
-		return proto.StepOne
+		return proto.StepOne, nil
 	case proto.StepOne:
-		return proto.StepTwo
+		return proto.StepTwo, nil
 	default:
-		return proto.StepDone
+		return proto.StepDone, nil
 	}
 }
 
@@ -112,8 +112,8 @@ func (*planNotRetryableErrDispatcherExt) IsRetryableErr(error) bool {
 	return false
 }
 
-func (p *planNotRetryableErrDispatcherExt) GetNextStep(dispatcher.TaskHandle, *proto.Task) proto.Step {
-	return proto.StepDone
+func (p *planNotRetryableErrDispatcherExt) GetNextStep(dispatcher.TaskHandle, *proto.Task) (proto.Step, error) {
+	return proto.StepDone, nil
 }
 
 func TestPlanErr(t *testing.T) {
