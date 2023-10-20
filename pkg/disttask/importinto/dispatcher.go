@@ -381,22 +381,22 @@ func (*ImportDispatcherExt) IsRetryableErr(error) bool {
 }
 
 // GetNextStep implements dispatcher.Extension interface.
-func (dsp *ImportDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) proto.Step {
+func (dsp *ImportDispatcherExt) GetNextStep(_ dispatcher.TaskHandle, task *proto.Task) (proto.Step, error) {
 	switch task.Step {
 	case proto.StepInit:
 		if dsp.GlobalSort {
-			return StepEncodeAndSort
+			return StepEncodeAndSort, nil
 		}
-		return StepImport
+		return StepImport, nil
 	case StepEncodeAndSort:
-		return StepMergeSort
+		return StepMergeSort, nil
 	case StepMergeSort:
-		return StepWriteAndIngest
+		return StepWriteAndIngest, nil
 	case StepImport, StepWriteAndIngest:
-		return StepPostProcess
+		return StepPostProcess, nil
 	default:
 		// current step must be StepPostProcess
-		return proto.StepDone
+		return proto.StepDone, nil
 	}
 }
 
