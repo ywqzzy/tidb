@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pingcap/tidb/br/pkg/membuf"
 	"github.com/pingcap/tidb/br/pkg/storage"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/util/intest"
@@ -682,7 +683,7 @@ func createAscendingFiles(
 	t *testing.T,
 	fileSize, fileCount int,
 	subDir string,
-) (storage.ExternalStorage, int) {
+) (storage.ExternalStorage, int, kv.Key, kv.Key) {
 	store := openTestingStorage(t)
 	ctx := context.Background()
 
@@ -691,6 +692,7 @@ func createAscendingFiles(
 	keyIdx := 0
 	value := make([]byte, 100)
 	kvCnt := 0
+	var minKey, maxKey kv.Key
 	for i := 0; i < fileCount; i++ {
 		builder := NewWriterBuilder().
 			SetMemorySizeLimit(uint64(float64(fileSize) * 1.1))
@@ -701,25 +703,49 @@ func createAscendingFiles(
 		)
 
 		totalSize := 0
+
+		var key string
 		for totalSize < fileSize {
-			key := fmt.Sprintf("key_%09d", keyIdx)
+			key = fmt.Sprintf("key_%09d", keyIdx)
+			if i == 0 && totalSize == 0 {
+				minKey = []byte(key)
+			}
 			err := writer.WriteRow(ctx, []byte(key), value, nil)
 			intest.AssertNoError(err)
 			keyIdx++
 			totalSize += len(key) + len(value)
 			kvCnt++
 		}
+		if i == fileCount-1 {
+			maxKey = []byte(key)
+		}
 		err := writer.Close(ctx)
 		intest.AssertNoError(err)
 	}
-	return store, kvCnt
+	return store, kvCnt, minKey, maxKey
+}
+
+func readAllDataTest(s *readTestSuite, minKey, maxKey kv.Key) {
+	bufPool := membuf.NewPool()
+	ctx := context.Background()
+	datas, stats, err := GetAllFileNames(ctx, s.store, "/"+s.subDir)
+	intest.AssertNoError(err)
+	var output memKVsAndBuffers
+	if s.beforeCreateReader != nil {
+		s.beforeCreateReader()
+	}
+
+	readAllData(ctx, s.store, datas, stats, minKey, maxKey.Next(), bufPool, &output)
+	if s.afterReaderClose != nil {
+		s.afterReaderClose()
+	}
 }
 
 func TestCompareReaderAscendingContent(t *testing.T) {
 	fileSize := 50 * 1024 * 1024
-	fileCnt := 24
+	fileCnt := 50
 	subDir := "ascending"
-	store, kvCnt := createAscendingFiles(t, fileSize, fileCnt, subDir)
+	store, kvCnt, minKey, maxKey := createAscendingFiles(t, fileSize, fileCnt, subDir)
 	memoryLimit := 64 * 1024 * 1024
 	fileIdx := 0
 	var (
@@ -784,6 +810,13 @@ func TestCompareReaderAscendingContent(t *testing.T) {
 	readMergeIter(suite)
 	t.Logf(
 		"merge iter read (hotspot=true) speed for %d bytes: %.2f MB/s",
+		fileSize*fileCnt,
+		float64(fileSize*fileCnt)/elapsed.Seconds()/1024/1024,
+	)
+
+	readAllDataTest(suite, minKey, maxKey)
+	t.Logf(
+		"readAllData speed for %d bytes: %.2f MB/s",
 		fileSize*fileCnt,
 		float64(fileSize*fileCnt)/elapsed.Seconds()/1024/1024,
 	)
