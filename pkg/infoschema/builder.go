@@ -200,7 +200,7 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 	case model.ActionCreateSchema:
 		return nil, b.applyCreateSchema(m, diff)
 	case model.ActionDropSchema:
-		return b.applyDropSchema(diff.SchemaID), nil
+		return b.applyDropSchema(diff), nil
 	case model.ActionRecoverSchema:
 		return b.applyRecoverSchema(m, diff)
 	case model.ActionModifySchemaCharsetAndCollate:
@@ -684,7 +684,7 @@ func (b *Builder) applyCreateSchema(m *meta.Meta, diff *model.SchemaDiff) error 
 		)
 	}
 	b.is.schemaMap[di.Name.L] = &schemaTables{dbInfo: di, tables: make(map[string]table.Table)}
-	if enableV2.Load() {
+	if EnableV2.Load() {
 		b.infoData.addDB(diff.Version, di)
 	}
 	return nil
@@ -733,8 +733,11 @@ func (b *Builder) applyDropPolicy(PolicyID int64) []int64 {
 	return []int64{}
 }
 
-func (b *Builder) applyDropSchema(schemaID int64) []int64 {
-	di, ok := b.is.SchemaByID(schemaID)
+func (b *Builder) applyDropSchema(diff *model.SchemaDiff) []int64 {
+	if EnableV2.Load() {
+		return b.applyDropSchemaV2(diff)
+	}
+	di, ok := b.is.SchemaByID(diff.SchemaID)
 	if !ok {
 		return nil
 	}
@@ -758,6 +761,57 @@ func (b *Builder) applyDropSchema(schemaID int64) []int64 {
 		b.applyDropTable(di, id, nil)
 	}
 	return tableIDs
+}
+
+func (b *Builder) applyDropSchemaV2(diff *model.SchemaDiff) []int64 {
+	di, ok := b.is.SchemaByID(diff.SchemaID)
+	if !ok {
+		return nil
+	}
+
+	b.infoData.deleteDB(diff.Version, di)
+	tableIDs := make([]int64, 0, len(di.Tables))
+	for _, tbl := range di.Tables {
+		tableIDs = appendAffectedIDs(tableIDs, tbl)
+	}
+
+	di = di.Clone()
+	for _, id := range tableIDs {
+		b.deleteBundle(b.is, id)
+		b.applyDropTableV2(diff, di, id, nil)
+	}
+	return tableIDs
+}
+
+func (b *Builder) applyDropTableV2(diff *model.SchemaDiff, dbInfo *model.DBInfo, tableID int64, affected []int64) []int64 {
+	// ywq todo
+	tableInfo := b.infoData.
+		b.infoData.delete(tableItem{
+		dbName:        dbInfo.Name.L,
+		dbID:          dbInfo.ID,
+		tableName:     tblInfo.Name.L,
+		tableID:       tblInfo.ID,
+		schemaVersion: schemaVersion,
+	}, tbl)
+
+	// Remove the table in temporaryTables
+	if b.is.temporaryTableIDs != nil {
+		delete(b.is.temporaryTableIDs, tableID)
+	}
+
+	// The old DBInfo still holds a reference to old table info, we need to remove it.
+	for i, tblInfo := range dbInfo.Tables {
+		if tblInfo.ID == tableID {
+			if i == len(dbInfo.Tables)-1 {
+				dbInfo.Tables = dbInfo.Tables[:i]
+			} else {
+				dbInfo.Tables = append(dbInfo.Tables[:i], dbInfo.Tables[i+1:]...)
+			}
+			b.is.deleteReferredForeignKeys(dbInfo.Name, tblInfo)
+			break
+		}
+	}
+	return affected
 }
 
 func (b *Builder) applyRecoverSchema(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
@@ -873,7 +927,7 @@ func (b *Builder) applyCreateTable(m *meta.Meta, dbInfo *model.DBInfo, tableID i
 	slices.SortFunc(b.is.sortedTablesBuckets[bucketIdx], func(i, j table.Table) int {
 		return cmp.Compare(i.Meta().ID, j.Meta().ID)
 	})
-	if enableV2.Load() {
+	if EnableV2.Load() {
 		b.infoData.add(tableItem{
 			dbName:        dbInfo.Name.L,
 			dbID:          dbInfo.ID,
@@ -969,7 +1023,7 @@ type infoschemaProxy struct {
 // Build builds and returns the built infoschema.
 func (b *Builder) Build() InfoSchema {
 	b.updateInfoSchemaBundles(b.is)
-	if enableV2.Load() {
+	if EnableV2.Load() {
 		return &infoschemaProxy{
 			infoschemaV2: infoschemaV2{
 				ts:            math.MaxUint64, // TODO: should be the correct TS
@@ -1104,7 +1158,7 @@ func (b *Builder) InitWithDBInfos(dbInfos []*model.DBInfo, policies []*model.Pol
 			return nil, errors.Trace(err)
 		}
 		b.is.schemaMap[driver.DBInfo.Name.L] = schTbls
-		if enableV2.Load() {
+		if EnableV2.Load() {
 			b.infoData.addSpecialDB(driver.DBInfo, schTbls)
 		}
 	}
@@ -1157,7 +1211,7 @@ func (b *Builder) createSchemaTablesForDB(di *model.DBInfo, tableFromMeta tableF
 		sortedTbls := b.is.sortedTablesBuckets[tableBucketIdx(t.ID)]
 		b.is.sortedTablesBuckets[tableBucketIdx(t.ID)] = append(sortedTbls, tbl)
 
-		if enableV2.Load() {
+		if EnableV2.Load() {
 			b.infoData.add(tableItem{
 				dbName:        di.Name.L,
 				dbID:          di.ID,
@@ -1172,7 +1226,7 @@ func (b *Builder) createSchemaTablesForDB(di *model.DBInfo, tableFromMeta tableF
 		}
 	}
 
-	if enableV2.Load() {
+	if EnableV2.Load() {
 		b.infoData.addDB(schemaVersion, di)
 	}
 

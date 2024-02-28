@@ -889,6 +889,7 @@ type infoschemaTestContext struct {
 	t      *testing.T
 	re     autoid.Requirement
 	ctx    context.Context
+	data   *infoschema.Data
 }
 
 func (tc *infoschemaTestContext) createSchema() {
@@ -915,7 +916,7 @@ func (tc *infoschemaTestContext) runCreateSchema() infoschema.InfoSchema {
 	tc.createSchema()
 
 	// apply diff
-	builder, err := infoschema.NewBuilder(tc.re, nil, nil).InitWithDBInfos(nil, nil, nil, 1)
+	builder, err := infoschema.NewBuilder(tc.re, nil, tc.data).InitWithDBInfos(nil, nil, nil, 1)
 	require.NoError(tc.t, err)
 	txn, err := tc.re.Store().Begin()
 	require.NoError(tc.t, err)
@@ -948,7 +949,7 @@ func (tc *infoschemaTestContext) runDropSchema() infoschema.InfoSchema {
 	tc.dropSchema()
 
 	// apply diff
-	builder := infoschema.NewBuilder(tc.re, nil, nil).InitWithOldInfoSchema(oldIs)
+	builder := infoschema.NewBuilder(tc.re, nil, tc.data).InitWithOldInfoSchema(oldIs)
 	txn, err := tc.re.Store().Begin()
 	require.NoError(tc.t, err)
 	_, err = builder.ApplyDiff(meta.NewMeta(txn),
@@ -999,7 +1000,7 @@ func (tc *infoschemaTestContext) runCreateTable(tblName string) (infoschema.Info
 	}
 	// create table
 	tblID := tc.createTable(tblName)
-	builder, err := infoschema.NewBuilder(tc.re, nil, nil).InitWithDBInfos([]*model.DBInfo{tc.dbInfo}, nil, nil, 1)
+	builder, err := infoschema.NewBuilder(tc.re, nil, tc.data).InitWithDBInfos([]*model.DBInfo{tc.dbInfo}, nil, nil, 1)
 	require.NoError(tc.t, err)
 
 	// apply diff
@@ -1032,7 +1033,7 @@ func (tc *infoschemaTestContext) runDropTable(tblName string) infoschema.InfoSch
 
 	// dropTable
 	tc.dropTable(tblName, tblID)
-	builder := infoschema.NewBuilder(tc.re, nil, nil).InitWithOldInfoSchema(is)
+	builder := infoschema.NewBuilder(tc.re, nil, tc.data).InitWithOldInfoSchema(is)
 
 	txn, err := tc.re.Store().Begin()
 	require.NoError(tc.t, err)
@@ -1053,25 +1054,34 @@ func (tc *infoschemaTestContext) clear() {
 }
 
 func TestApplyDiff(t *testing.T) {
-	re := createAutoIDRequirement(t)
-	defer func() {
-		err := re.Store().Close()
-		require.NoError(t, err)
-	}()
+	for i := 0; i < 2; i++ {
+		if i == 1 {
+			infoschema.EnableV2.Store(true)
+		}
+		re := createAutoIDRequirement(t)
+		defer func() {
+			err := re.Store().Close()
+			require.NoError(t, err)
+		}()
 
-	tc := &infoschemaTestContext{
-		t:   t,
-		re:  re,
-		ctx: kv.WithInternalSourceType(context.Background(), kv.InternalTxnDDL),
+		tc := &infoschemaTestContext{
+			t:    t,
+			re:   re,
+			ctx:  kv.WithInternalSourceType(context.Background(), kv.InternalTxnDDL),
+			data: infoschema.NewData(),
+		}
+
+		tc.runCreateSchema()
+		tc.clear()
+		tc.runDropSchema()
+		tc.clear()
+		tc.runCreateTable("test")
+		tc.clear()
+		// tc.runDropTable("test")
+		// tc.clear()
+		// TODO check all actions..
+		if i == 1 {
+			infoschema.EnableV2.Store(false)
+		}
 	}
-
-	tc.runCreateSchema()
-	tc.clear()
-	tc.runDropSchema()
-	tc.clear()
-	tc.runCreateTable("test")
-	tc.clear()
-	tc.runDropTable("test")
-	tc.clear()
-	// TODO check all actions..
 }
