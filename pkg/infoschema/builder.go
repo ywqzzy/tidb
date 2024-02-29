@@ -764,6 +764,7 @@ func (b *Builder) applyDropSchema(diff *model.SchemaDiff) []int64 {
 }
 
 func (b *Builder) applyDropSchemaV2(diff *model.SchemaDiff) []int64 {
+	// ywq todo
 	di, ok := b.is.SchemaByID(diff.SchemaID)
 	if !ok {
 		return nil
@@ -784,20 +785,18 @@ func (b *Builder) applyDropSchemaV2(diff *model.SchemaDiff) []int64 {
 }
 
 func (b *Builder) applyDropTableV2(diff *model.SchemaDiff, dbInfo *model.DBInfo, tableID int64, affected []int64) []int64 {
-	// ywq todo
-	tableInfo := b.infoData.
-		b.infoData.delete(tableItem{
-		dbName:        dbInfo.Name.L,
-		dbID:          dbInfo.ID,
-		tableName:     tblInfo.Name.L,
-		tableID:       tblInfo.ID,
-		schemaVersion: schemaVersion,
-	}, tbl)
-
 	// Remove the table in temporaryTables
 	if b.is.temporaryTableIDs != nil {
 		delete(b.is.temporaryTableIDs, tableID)
 	}
+
+	b.infoData.delete(tableItem{
+		dbName:        dbInfo.Name.L,
+		dbID:          dbInfo.ID,
+		tableName:     tblInfo.Name.L,
+		tableID:       tblInfo.ID,
+		schemaVersion: diff.Version,
+	})
 
 	// The old DBInfo still holds a reference to old table info, we need to remove it.
 	for i, tblInfo := range dbInfo.Tables {
@@ -807,7 +806,7 @@ func (b *Builder) applyDropTableV2(diff *model.SchemaDiff, dbInfo *model.DBInfo,
 			} else {
 				dbInfo.Tables = append(dbInfo.Tables[:i], dbInfo.Tables[i+1:]...)
 			}
-			b.is.deleteReferredForeignKeys(dbInfo.Name, tblInfo)
+			// TODO: deleteReferredForeignKeys
 			break
 		}
 	}
