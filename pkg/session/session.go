@@ -2427,7 +2427,11 @@ func (rs *execStmtResult) Finish() error {
 			err1 = f.Finish()
 		}
 		err2 := finishStmt(context.Background(), rs.se, err, rs.sql)
-		err = stderrs.Join(err1, err2)
+		if err1 != nil {
+			err = err1
+		} else {
+			err = err2
+		}
 	})
 	return err
 }
@@ -2439,7 +2443,10 @@ func (rs *execStmtResult) Close() error {
 	err1 := rs.Finish()
 	err2 := rs.RecordSet.Close()
 	rs.closed = true
-	return stderrs.Join(err1, err2)
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }
 
 // rollbackOnError makes sure the next statement starts a new transaction with the latest InfoSchema.
@@ -3571,7 +3578,7 @@ func createSessionWithOpt(store kv.Storage, opt *Opt) (*session, error) {
 	}
 	s.sessionVars = variable.NewSessionVars(s)
 	s.exprctx = newExpressionContextImpl(s)
-	s.pctx = newPlanContextImpl(s, s.exprctx.ExprCtxExtendedImpl)
+	s.pctx = newPlanContextImpl(s)
 	s.tblctx = tbctximpl.NewTableContextImpl(s, s.exprctx)
 
 	if opt != nil && opt.PreparedPlanCache != nil {
@@ -3634,7 +3641,7 @@ func CreateSessionWithDomain(store kv.Storage, dom *domain.Domain) (*session, er
 		sessionStatesHandlers: make(map[sessionstates.SessionStateType]sessionctx.SessionStatesHandler),
 	}
 	s.exprctx = newExpressionContextImpl(s)
-	s.pctx = newPlanContextImpl(s, s.exprctx.ExprCtxExtendedImpl)
+	s.pctx = newPlanContextImpl(s)
 	s.tblctx = tbctximpl.NewTableContextImpl(s, s.exprctx)
 	s.mu.values = make(map[fmt.Stringer]any)
 	s.lockedTables = make(map[int64]model.TableLockTpInfo)
