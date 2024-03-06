@@ -26,7 +26,6 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/pkg/config"
-	"github.com/pingcap/tidb/pkg/ddl/placement"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/meta"
 	"github.com/pingcap/tidb/pkg/meta/autoid"
@@ -65,7 +64,7 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 	case model.ActionCreateSchema:
 		return nil, b.applyCreateSchema(m, diff)
 	case model.ActionDropSchema:
-		return b.applyDropSchema(diff.SchemaID), nil
+		return b.applyDropSchema(diff), nil
 	case model.ActionRecoverSchema:
 		return b.applyRecoverSchema(m, diff)
 	case model.ActionModifySchemaCharsetAndCollate:
@@ -399,9 +398,9 @@ func (b *Builder) dropTableForUpdate(newTableID, oldTableID int64, dbInfo *model
 				)
 			}
 			oldDBInfo := b.getSchemaAndCopyIfNecessary(oldRoDBInfo.Name.L)
-			tmpIDs = b.applyDropTable(oldDBInfo, oldTableID, tmpIDs)
+			tmpIDs = b.applyDropTable(diff, oldDBInfo, oldTableID, tmpIDs)
 		} else {
-			tmpIDs = b.applyDropTable(dbInfo, oldTableID, tmpIDs)
+			tmpIDs = b.applyDropTable(diff, dbInfo, oldTableID, tmpIDs)
 		}
 
 		if oldTableID != newTableID {
@@ -413,6 +412,9 @@ func (b *Builder) dropTableForUpdate(newTableID, oldTableID int64, dbInfo *model
 }
 
 func (b *Builder) applyTableUpdate(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
+	if b.enableV2 {
+		return b.applyTableUpdateV2(m, diff)
+	}
 	roDBInfo, ok := b.infoSchema.SchemaByID(diff.SchemaID)
 	if !ok {
 		return nil, ErrDatabaseNotExists.GenWithStackByArgs(
@@ -433,6 +435,34 @@ func (b *Builder) applyTableUpdate(m *meta.Meta, diff *model.SchemaDiff) ([]int6
 		// All types except DropTableOrView.
 		var err error
 		tblIDs, err = b.applyCreateTable(m, dbInfo, newTableID, allocs, diff.Type, tblIDs, diff.Version)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+	}
+	return tblIDs, nil
+}
+
+// TODO: more UT to check the correctness.
+func (b *Builder) applyTableUpdateV2(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
+	oldDBInfo, ok := b.infoschemaV2.SchemaByID(diff.SchemaID)
+	if !ok {
+		return nil, ErrDatabaseNotExists.GenWithStackByArgs(
+			fmt.Sprintf("(Schema ID %d)", diff.SchemaID),
+		)
+	}
+
+	oldTableID, newTableID := b.getTableIDs(diff)
+	b.updateBundleForTableUpdate(diff, newTableID, oldTableID)
+
+	tblIDs, allocs, err := b.dropTableForUpdate(newTableID, oldTableID, oldDBInfo, diff)
+	if err != nil {
+		return nil, err
+	}
+
+	if tableIDIsValid(newTableID) {
+		// All types except DropTableOrView.
+		var err error
+		tblIDs, err = b.applyCreateTable(m, oldDBInfo, newTableID, allocs, diff.Type, tblIDs, diff.Version)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -521,8 +551,11 @@ func (b *Builder) applyModifySchemaDefaultPlacement(m *meta.Meta, diff *model.Sc
 	return nil
 }
 
-func (b *Builder) applyDropSchema(schemaID int64) []int64 {
-	di, ok := b.infoSchema.SchemaByID(schemaID)
+func (b *Builder) applyDropSchema(diff *model.SchemaDiff) []int64 {
+	if b.enableV2 {
+		return b.applyDropSchemaV2(diff)
+	}
+	di, ok := b.infoSchema.SchemaByID(diff.SchemaID)
 	if !ok {
 		return nil
 	}
@@ -543,9 +576,54 @@ func (b *Builder) applyDropSchema(schemaID int64) []int64 {
 	di = di.Clone()
 	for _, id := range tableIDs {
 		b.deleteBundle(b.infoSchema, id)
-		b.applyDropTable(di, id, nil)
+		b.applyDropTable(diff, di, id, nil)
 	}
 	return tableIDs
+}
+
+func (b *Builder) applyDropSchemaV2(diff *model.SchemaDiff) []int64 {
+	di, ok := b.infoschemaV2.SchemaByID(diff.SchemaID)
+	if !ok {
+		return nil
+	}
+
+	b.infoData.deleteDB(di.Name)
+	tableIDs := make([]int64, 0, len(di.Tables))
+	for _, tbl := range di.Tables {
+		tableIDs = appendAffectedIDs(tableIDs, tbl)
+	}
+
+	di = di.Clone()
+	for _, id := range tableIDs {
+		b.deleteBundle(b.infoSchema, id)
+		b.applyDropTableV2(diff, di, id, nil)
+	}
+	return tableIDs
+}
+
+func (b *Builder) applyDropTableV2(diff *model.SchemaDiff, dbInfo *model.DBInfo, tableID int64, affected []int64) []int64 {
+	// Remove the table in temporaryTables
+	if b.infoSchemaMisc.temporaryTableIDs != nil {
+		delete(b.infoSchemaMisc.temporaryTableIDs, tableID)
+	}
+
+	table, ok := b.infoschemaV2.TableByID(tableID)
+
+	if !ok {
+		return nil
+	}
+
+	b.infoData.delete(tableItem{
+		dbName:        dbInfo.Name.L,
+		dbID:          dbInfo.ID,
+		tableName:     table.Meta().Name.L,
+		tableID:       table.Meta().ID,
+		schemaVersion: diff.Version,
+	})
+
+	// The old DBInfo still holds a reference to old table info, we need to remove it.
+	b.deleteReferredForeignKeys(dbInfo, tableID)
+	return affected
 }
 
 func (b *Builder) applyRecoverSchema(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
@@ -726,7 +804,10 @@ func ConvertOldVersionUTF8ToUTF8MB4IfNeed(tbInfo *model.TableInfo) {
 	}
 }
 
-func (b *Builder) applyDropTable(dbInfo *model.DBInfo, tableID int64, affected []int64) []int64 {
+func (b *Builder) applyDropTable(diff *model.SchemaDiff, dbInfo *model.DBInfo, tableID int64, affected []int64) []int64 {
+	if b.enableV2 {
+		return b.applyDropTableV2(diff, dbInfo, tableID, affected)
+	}
 	bucketIdx := tableBucketIdx(tableID)
 	sortedTbls := b.infoSchema.sortedTablesBuckets[bucketIdx]
 	idx := sortedTbls.searchTable(tableID)
@@ -745,8 +826,12 @@ func (b *Builder) applyDropTable(dbInfo *model.DBInfo, tableID int64, affected [
 	if b.infoSchema.temporaryTableIDs != nil {
 		delete(b.infoSchema.temporaryTableIDs, tableID)
 	}
-
 	// The old DBInfo still holds a reference to old table info, we need to remove it.
+	b.deleteReferredForeignKeys(dbInfo, tableID)
+	return affected
+}
+
+func (b *Builder) deleteReferredForeignKeys(dbInfo *model.DBInfo, tableID int64) {
 	for i, tblInfo := range dbInfo.Tables {
 		if tblInfo.ID == tableID {
 			if i == len(dbInfo.Tables)-1 {
@@ -758,7 +843,6 @@ func (b *Builder) applyDropTable(dbInfo *model.DBInfo, tableID int64, affected [
 			break
 		}
 	}
-	return affected
 }
 
 // Build builds and returns the built infoschema.
@@ -781,8 +865,8 @@ func (b *Builder) InitWithOldInfoSchema(oldSchema InfoSchema) (*Builder, error) 
 	}
 
 	var oldIS *infoSchema
-	if proxy, ok := oldSchema.(*infoschemaV2); ok {
-		oldIS = proxy.infoSchema
+	if schemaV2, ok := oldSchema.(*infoschemaV2); ok {
+		oldIS = schemaV2.infoSchema
 	} else {
 		oldIS = oldSchema.(*infoSchema)
 	}
@@ -914,8 +998,8 @@ func (b *Builder) createSchemaTablesForDB(di *model.DBInfo, tableFromMeta tableF
 			b.addTemporaryTable(tblInfo.ID)
 		}
 	}
-
 	b.addDB(schemaVersion, di, schTbls)
+
 	return nil
 }
 
@@ -961,25 +1045,12 @@ func RegisterVirtualTable(dbInfo *model.DBInfo, tableFromMeta tableFromMetaFunc)
 // NewBuilder creates a new Builder with a Handle.
 func NewBuilder(r autoid.Requirement, factory func() (pools.Resource, error), infoData *Data) *Builder {
 	return &Builder{
-		enableV2:    variable.SchemaCacheSize.Load() > 0,
-		Requirement: r,
-		infoschemaV2: infoschemaV2{
-			infoSchema: &infoSchema{
-				infoSchemaMisc: infoSchemaMisc{
-					policyMap:             map[string]*model.PolicyInfo{},
-					resourceGroupMap:      map[string]*model.ResourceGroupInfo{},
-					ruleBundleMap:         map[int64]*placement.Bundle{},
-					referredForeignKeyMap: make(map[SchemaAndTableName][]*model.ReferredFKInfo),
-				},
-				schemaMap:           map[string]*schemaTables{},
-				sortedTablesBuckets: make([]sortedTables, bucketCount),
-			},
-			Data: infoData,
-			r:    r,
-		},
-		dirtyDB:  make(map[string]bool),
-		factory:  factory,
-		infoData: infoData,
+		enableV2:     variable.SchemaCacheSize.Load() > 0,
+		Requirement:  r,
+		infoschemaV2: NewInfoSchemaV2(r, infoData),
+		dirtyDB:      make(map[string]bool),
+		factory:      factory,
+		infoData:     infoData,
 	}
 }
 
