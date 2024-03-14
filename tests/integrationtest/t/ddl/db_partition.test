@@ -2432,7 +2432,6 @@ create table nt35 (a int, b int, unique index(b));
 -- error 1731
 alter table pt35 exchange partition p0 with table nt35;
 
-create table pt36 (id int not null primary key auto_increment,t_id int not null) partition by hash(id) partitions 1;
 create table nt36 (id int not null primary key auto_increment, t_id int not null,foreign key fk_id (t_id) references pt36(id));
 ALTER TABLE nt36 DROP FOREIGN KEY fk_id;
 alter table pt36 exchange partition p0 with table nt36;
